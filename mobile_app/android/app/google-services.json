@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "484504357959",
+    "project_id": "safe-hair-274",
+    "storage_bucket": "safe-hair-274.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:484504357959:android:9b4d365c7b9df459163562",
+        "android_client_info": {
+          "package_name": "com.safehair.safe_hair"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1VUk348SOnvBkD0SEmWge_f6urQBBFuU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

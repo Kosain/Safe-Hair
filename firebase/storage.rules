@@ -1,0 +1,10 @@
+rules_version = '2';
+// TEMPORARY — permissive for development/QA. Switch to auth-only rules before production.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if true;
+      // allow read, write: if request.auth != null;
+    }
+  }
+}

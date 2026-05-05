@@ -1,0 +1,10 @@
+# Optional ML stack (install in backend venv when training segmentation / exporting ONNX).
+# pip install -r requirements-ml.txt
+#
+# TensorFlow + tf2onnx: use Python 3.10–3.12 (TF may be unavailable on 3.13+).
+tensorflow>=2.15.0,<2.19.0
+tf2onnx>=1.16.0
+# PyTorch path: train_scalp_segmentation_torch.py + ONNX export (works on newer Python).
+torch>=2.9.0
+onnx>=1.16.0
+# requirements.txt already includes numpy opencv scikit-learn joblib onnxruntime
