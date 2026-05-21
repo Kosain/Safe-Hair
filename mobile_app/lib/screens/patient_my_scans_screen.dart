@@ -1,5 +1,5 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -11,7 +11,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import '../services/firebase_service.dart';
+import '../utils/scalp_issue_recommendation_text.dart';
 import '../utils/scalp_report_pdf.dart';
 import '../widgets/patient_web_scaffold.dart';
 
@@ -27,6 +29,15 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
   Uint8List? _selectedImageBytes;
   bool _analyzing = false;
 
+  String _normalizeBase64(String raw) {
+    final trimmed = raw.trim();
+    final comma = trimmed.indexOf(',');
+    final payload = (trimmed.startsWith('data:') && comma >= 0)
+        ? trimmed.substring(comma + 1)
+        : trimmed;
+    return payload.replaceAll('\n', '').replaceAll('\r', '');
+  }
+
   Future<void> _pickImage(ImageSource source) async {
     final xFile = await _picker.pickImage(source: source, maxWidth: 900);
     if (xFile == null) return;
@@ -39,165 +50,221 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
     if (_selectedImageBytes == null) return;
 
     setState(() => _analyzing = true);
-    await Future<void>.delayed(const Duration(seconds: 2));
-    if (!mounted) return;
+    try {
+      if (!mounted) return;
+      final auth = context.read<AuthProvider>();
+      final uid = auth.userId;
+      if (uid == null || uid.isEmpty || !FirebaseService.isInitialized) {
+        if (!mounted) return;
+        setState(() => _analyzing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sign in with Firebase enabled to save your analysis and reports.')),
+        );
+        return;
+      }
 
-    final rnd = Random();
-    final strength = 55 + rnd.nextInt(36);
-    final scalp = 52 + rnd.nextInt(38);
-    final damage = 30 + rnd.nextInt(41);
-    final fall = 35 + rnd.nextInt(46);
-    final average = FirebaseService.hairHealthAverageScore(strength, scalp, damage, fall);
-    final now = DateTime.now();
-    final dateStr = DateFormat('d MMM y').format(now);
-    final timeStr = DateFormat('HH:mm').format(now);
+      final pSnap = await FirebaseService.getPatientDetails(uid);
+      if (!mounted) return;
+      final pd = pSnap?.data();
+      String? profileGender;
+      final gr = (pd?['gender']?.toString() ?? '').trim();
+      if (gr.isNotEmpty) profileGender = gr;
 
-    if (!mounted) return;
-    final auth = context.read<AuthProvider>();
-    final uid = auth.userId;
-    if (uid == null || uid.isEmpty || !FirebaseService.isInitialized) {
+      final now = DateTime.now();
+      int? profileAge;
+      final dobDay = (pd?['dob_day'] as num?)?.toInt();
+      final dobMonth = (pd?['dob_month'] as num?)?.toInt();
+      final dobYear = (pd?['dob_year'] as num?)?.toInt();
+      if (dobDay != null && dobMonth != null && dobYear != null) {
+        try {
+          final dob = DateTime(dobYear, dobMonth, dobDay);
+          var a = now.year - dob.year;
+          if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) a--;
+          if (a > 0 && a < 120) profileAge = a;
+        } catch (_) {}
+      }
+
+      final api = await ApiService().analyzeScalpImage(
+        _selectedImageBytes!,
+        userId: uid,
+        patientGender: profileGender,
+        patientAge: profileAge,
+      );
+      if (api == null || api['_error'] != null) {
+        throw Exception(api?['_error']?.toString() ?? 'AI API returned no result.');
+      }
+
+      final strength = ((api['hair_strength'] ?? api['hairStrength']) as num?)?.round() ?? 0;
+      final scalp = ((api['scalp_health'] ?? api['scalpHealth']) as num?)?.round() ?? 0;
+      final density = ((api['hair_density'] ?? api['hairDensity']) as num?)?.round() ?? 0;
+      final moisture = ((api['moisture_level'] ?? api['moistureLevel']) as num?)?.round() ?? 0;
+      final damage = ((api['hair_damage_level'] ?? api['hairDamageLevel']) as num?)?.round() ??
+          (100 - density).clamp(0, 100);
+      final fall = ((api['hair_fall_risk'] ?? api['hairFallRisk']) as num?)?.round() ??
+          (100 - scalp).clamp(0, 100);
+      final average = FirebaseService.hairHealthAverageScore(strength, scalp, damage, fall);
+      final dateStr = DateFormat('d MMM y').format(now);
+      final timeStr = DateFormat('HH:mm').format(now);
+
+      final reportId = FirebaseService.firestore.collection('patient_details').doc(uid).collection('reports').doc().id;
+      final overlayRaw = (api['overlay_image_base64'] ?? api['overlayImageBase64'])?.toString();
+      final overlayBase64 =
+          (overlayRaw != null && overlayRaw.isNotEmpty) ? _normalizeBase64(overlayRaw) : null;
+      final originalBase64 = base64Encode(_selectedImageBytes!);
+      final analyzedBase64 =
+          (overlayBase64 != null && overlayBase64.isNotEmpty) ? overlayBase64 : originalBase64;
+
+      String? scalpUrl = await FirebaseService.uploadBytes(
+        'patient_scalp_images/$uid/$reportId.jpg',
+        _selectedImageBytes!,
+        contentType: 'image/jpeg',
+      );
+
+      if (!mounted) return;
+      final nameFromProfile = (pd?['name']?.toString() ?? '').trim();
+      final authName = (auth.userName ?? '').trim();
+      final patientDisplayName = nameFromProfile.isNotEmpty
+          ? nameFromProfile
+          : (authName.isNotEmpty ? authName : 'Patient');
+      final genderRaw = (pd?['gender']?.toString() ?? '').trim();
+      final patientGender = genderRaw.isNotEmpty ? genderRaw : 'Not specified';
+      final patientAge = profileAge ?? 32;
+
+      final recs = List<String>.from(api['recommendations'] ?? const <String>[]);
+      final conds = List<String>.from(api['conditions'] ?? const <String>[]);
+      final reliability = (api['estimate_reliability_percent'] ?? api['estimateReliabilityPercent'])?.toString() ?? '';
+      final view = (api['view_orientation'] ?? api['viewOrientation'])?.toString() ?? 'Scalp';
+      String inferLocation(String c) {
+        final s = c.toLowerCase();
+        if (s.contains('temple') || s.contains('frontal') || s.contains('hairline') || s.contains('front')) {
+          return 'Frontal area';
+        }
+        if (s.contains('vertex') || s.contains('crown') || s.contains('top')) {
+          return 'Vertex/Crown';
+        }
+        if (s.contains('diffuse')) return 'Diffuse';
+        return view == 'front' ? 'Frontal area' : 'Vertex/Crown';
+      }
+
+      final issues = <Map<String, dynamic>>[];
+      for (var i = 0; i < conds.length; i++) {
+        final c = conds[i].toString();
+        issues.add({
+          'issue': c,
+          'severity': scalpConditionSeverityLabel(c),
+          'location': inferLocation(c),
+          'recommendation': scalpIssueRecommendationText(recs, i, conds.length),
+          'confidencePct': reliability,
+        });
+      }
+
+      final gm = api['graft_min'] ?? api['graftMin'];
+      final gx = api['graft_max'] ?? api['graftMax'];
+      final graftText = (gm != null && gx != null) ? '$gm - $gx' : 'Not available';
+
+      final pdfBytes = await buildScalpAnalysisReportPdf(
+        patientName: patientDisplayName,
+        dateStr: dateStr,
+        timeStr: timeStr,
+        patientAge: patientAge,
+        patientGender: patientGender,
+        overallScore: average.round(),
+        strength: strength,
+        scalp: scalp,
+        damage: damage,
+        fall: fall,
+        graftEstimateText: graftText,
+        issues: issues,
+        recommendations: recs,
+        scalpImageBytes: overlayBase64 != null && overlayBase64.isNotEmpty
+            ? Uint8List.fromList(base64Decode(overlayBase64))
+            : _selectedImageBytes,
+      );
+
+      String? localFileName;
+      if (!kIsWeb) {
+        try {
+          final dir = await getApplicationDocumentsDirectory();
+          final folder = Directory('${dir.path}/reports');
+          if (!await folder.exists()) await folder.create(recursive: true);
+          localFileName = 'report_${DateTime.now().millisecondsSinceEpoch}.pdf';
+          await File('${folder.path}/$localFileName').writeAsBytes(pdfBytes);
+        } catch (_) {}
+      }
+
+      final pdfUrl = await FirebaseService.uploadBytes(
+        'patient_reports/$uid/$reportId.pdf',
+        pdfBytes,
+        contentType: 'application/pdf',
+      );
+      if (!mounted) return;
+
+      final ok = await FirebaseService.saveHairAnalysisSession(
+        userId: uid,
+        strength: strength,
+        scalp: scalp,
+        damage: damage,
+        fall: fall,
+        reportDocId: reportId,
+        reportPayload: {
+          if (pdfUrl != null) 'pdfUrl': pdfUrl,
+          if (localFileName != null) 'localPdfFileName': localFileName,
+          if (scalpUrl != null && scalpUrl.isNotEmpty) 'scalpImageUrl': scalpUrl,
+          // Keep explicit provenance so report always shows the image tied to this analysis.
+          'sourceImageBase64': originalBase64,
+          'analyzedImageBase64': analyzedBase64,
+          // Backward-compatible keys used by existing report reader.
+          'scalpImageBase64': analyzedBase64,
+          'imageBase64': analyzedBase64,
+          if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlay_image_base64': overlayBase64,
+          if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlayImageBase64': overlayBase64,
+          'patientDisplayName': patientDisplayName,
+          'patientAge': patientAge,
+          'patientGender': patientGender,
+          'overallScore': average.round(),
+          'issues': issues,
+          'recommendations': recs,
+          'graftEstimateText': graftText,
+          'summary': {
+            'hairStrength': strength,
+            'scalpHealth': scalp,
+            'hairDensity': density,
+            'moistureLevel': moisture,
+            'hairDamageLevel': damage,
+            'hairFallRisk': fall,
+            'conditions': conds,
+            'recommendations': recs,
+            'graftMin': gm,
+            'graftMax': gx,
+            'viewOrientation': view,
+            'estimateReliabilityPercent': reliability,
+            if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlay_image_base64': overlayBase64,
+            if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlayImageBase64': overlayBase64,
+          },
+        },
+      );
+      if (!mounted) return;
+      if (!ok) {
+        setState(() => _analyzing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save analysis. Check connection and try again.')),
+        );
+        return;
+      }
+
+      setState(() => _analyzing = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('AI analysis report generated')),
+      );
+      context.go('/my-report/view/$reportId');
+    } catch (e) {
       if (!mounted) return;
       setState(() => _analyzing = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sign in with Firebase enabled to save your analysis and reports.')),
+        SnackBar(content: Text('Analysis failed: $e')),
       );
-      return;
     }
-
-    final reportId = FirebaseService.firestore.collection('patient_details').doc(uid).collection('reports').doc().id;
-
-    String? scalpUrl;
-    scalpUrl = await FirebaseService.uploadBytes(
-      'patient_scalp_images/$uid/$reportId.jpg',
-      _selectedImageBytes!,
-      contentType: 'image/jpeg',
-    );
-
-    final pSnap = await FirebaseService.getPatientDetails(uid);
-    if (!mounted) return;
-    final pd = pSnap?.data();
-    final nameFromProfile = (pd?['name']?.toString() ?? '').trim();
-    final authName = (auth.userName ?? '').trim();
-    var patientDisplayName = nameFromProfile.isNotEmpty
-        ? nameFromProfile
-        : (authName.isNotEmpty ? authName : 'Patient');
-    final genderRaw = (pd?['gender']?.toString() ?? '').trim();
-    var patientGender = genderRaw.isNotEmpty ? genderRaw : 'Not specified';
-    var patientAge = 32;
-    final dobDay = (pd?['dob_day'] as num?)?.toInt();
-    final dobMonth = (pd?['dob_month'] as num?)?.toInt();
-    final dobYear = (pd?['dob_year'] as num?)?.toInt();
-    if (dobDay != null && dobMonth != null && dobYear != null) {
-      try {
-        final dob = DateTime(dobYear, dobMonth, dobDay);
-        var a = now.year - dob.year;
-        if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) a--;
-        if (a > 0 && a < 120) patientAge = a;
-      } catch (_) {}
-    }
-
-    final issues = <Map<String, dynamic>>[
-      {
-        'issue': 'Hair thinning',
-        'severity': 'Moderate',
-        'location': 'Frontal area',
-        'recommendation': 'Minoxidil + massage',
-        'confidencePct': 92,
-      },
-      {
-        'issue': 'Seborrheic buildup',
-        'severity': 'Mild',
-        'location': 'Vertex',
-        'recommendation': 'Medicated anti-dandruff shampoo',
-        'confidencePct': 84,
-      },
-      {
-        'issue': 'Dry scalp',
-        'severity': 'Low',
-        'location': 'Diffuse',
-        'recommendation': 'Gentle moisturizer + reduce heat',
-        'confidencePct': 76,
-      },
-    ];
-    final recommendations = <String>[
-      'Use a medicated anti-dandruff shampoo 2–3× per week.',
-      'Consider topical minoxidil as directed by a dermatologist.',
-      'Reduce heat styling; use a heat protectant when needed.',
-      'Track shedding weekly and photograph the same scalp zones.',
-    ];
-
-    final overall = average.round();
-    final pdfBytes = await buildScalpAnalysisReportPdf(
-      patientName: patientDisplayName,
-      dateStr: dateStr,
-      timeStr: timeStr,
-      patientAge: patientAge,
-      patientGender: patientGender,
-      overallScore: overall,
-      strength: strength,
-      scalp: scalp,
-      damage: damage,
-      fall: fall,
-      graftEstimateText: '1,800 – 2,200',
-      issues: issues,
-      recommendations: recommendations,
-      scalpImageBytes: _selectedImageBytes,
-    );
-
-    String? localFileName;
-    if (!kIsWeb) {
-      try {
-        final dir = await getApplicationDocumentsDirectory();
-        final folder = Directory('${dir.path}/reports');
-        if (!await folder.exists()) await folder.create(recursive: true);
-        localFileName = 'report_${DateTime.now().millisecondsSinceEpoch}.pdf';
-        await File('${folder.path}/$localFileName').writeAsBytes(pdfBytes);
-      } catch (_) {}
-    }
-
-    String? pdfUrl;
-    pdfUrl = await FirebaseService.uploadBytes(
-      'patient_reports/$uid/$reportId.pdf',
-      pdfBytes,
-      contentType: 'application/pdf',
-    );
-    if (!mounted) return;
-    final ok = await FirebaseService.saveHairAnalysisSession(
-      userId: uid,
-      strength: strength,
-      scalp: scalp,
-      damage: damage,
-      fall: fall,
-      reportDocId: reportId,
-      reportPayload: {
-        if (pdfUrl != null) 'pdfUrl': pdfUrl,
-        if (localFileName != null) 'localPdfFileName': localFileName,
-        if (scalpUrl != null && scalpUrl.isNotEmpty) 'scalpImageUrl': scalpUrl,
-        'patientDisplayName': patientDisplayName,
-        'patientAge': patientAge,
-        'patientGender': patientGender,
-        'overallScore': overall,
-        'issues': issues,
-        'recommendations': recommendations,
-        'graftEstimateText': '1,800 – 2,200',
-      },
-    );
-    if (!mounted) return;
-    if (!ok) {
-      setState(() => _analyzing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not save analysis. Check connection and try again.')),
-      );
-      return;
-    }
-
-    setState(() => _analyzing = false);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Report generated')),
-    );
-    context.go('/my-report/view/$reportId');
   }
 
   @override

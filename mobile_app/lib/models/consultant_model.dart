@@ -25,7 +25,11 @@ class ConsultantModel {
       location: (json['location'] ?? json['clinicLocation'] ?? '').toString(),
       specialization: (json['specialization'] ?? '').toString(),
       rating: (json['rating'] as num?)?.toDouble() ?? 0,
-      consultationFee: (json['consultation_fee'] as num?)?.toInt() ?? 0,
+      consultationFee: () {
+        final raw = json['consultationFee'] ?? json['consultation_fee'];
+        if (raw is num) return raw.toInt();
+        return int.tryParse(raw?.toString() ?? '') ?? 0;
+      }(),
     );
   }
 }

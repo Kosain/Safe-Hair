@@ -189,11 +189,21 @@ class ApiService {
     return null;
   }
 
-  Future<Map<String, dynamic>?> analyzeScalpImage(List<int> imageBytes, {String? userId}) async {
+  Future<Map<String, dynamic>?> analyzeScalpImage(
+    List<int> imageBytes, {
+    String? userId,
+    String? patientGender,
+    int? patientAge,
+  }) async {
     try {
       // Preferred v1 route: report upload + analysis.
       final uid = userId ?? _currentUserId;
-      final v1 = await uploadReportImage(imageBytes: imageBytes, userId: uid ?? 'unknown');
+      final v1 = await uploadReportImage(
+        imageBytes: imageBytes,
+        userId: uid ?? 'unknown',
+        patientGender: patientGender,
+        patientAge: patientAge,
+      );
       if (v1 != null && (v1['analysis'] != null || v1['hair_strength'] != null)) {
         if (v1['analysis'] is Map<String, dynamic>) {
           return {
@@ -219,7 +229,12 @@ class ApiService {
           .post(
             Uri.parse('$_baseUrl/api/ai/scalp-analyze'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'image_base64': base64Image}),
+            body: jsonEncode({
+              'image_base64': base64Image,
+              if (patientGender != null && patientGender.trim().isNotEmpty)
+                'patient_gender': patientGender.trim(),
+              if (patientAge != null && patientAge > 0 && patientAge < 120) 'patient_age': patientAge,
+            }),
           )
           .timeout(const Duration(seconds: 30));
       if (res.statusCode == 200) return jsonDecode(res.body) as Map<String, dynamic>;
@@ -330,12 +345,17 @@ class ApiService {
     required List<int> imageBytes,
     required String userId,
     String filename = 'scalp.jpg',
+    String? patientGender,
+    int? patientAge,
   }) async {
     try {
-      final req = http.MultipartRequest(
-        'POST',
-        Uri.parse('$_baseUrl$_v1/reports/upload?user_id=$userId'),
-      );
+      final qp = <String, String>{
+        'user_id': userId,
+        if (patientGender != null && patientGender.trim().isNotEmpty) 'patient_gender': patientGender.trim(),
+        if (patientAge != null && patientAge > 0 && patientAge < 120) 'patient_age': '$patientAge',
+      };
+      final uri = Uri.parse('$_baseUrl$_v1/reports/upload').replace(queryParameters: qp);
+      final req = http.MultipartRequest('POST', uri);
       req.files.add(http.MultipartFile.fromBytes('file', imageBytes, filename: filename));
       req.headers.addAll(_jsonHeaders(withAuth: true)..remove('Content-Type'));
       final streamed = await req.send();

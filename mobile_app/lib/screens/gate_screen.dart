@@ -17,7 +17,11 @@ class GateScreen extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 const SizedBox(height: 24),
-                const CircularProgressIndicator(strokeWidth: 3),
+                CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: AppColors.darkButton,
+                  backgroundColor: AppColors.darkButton.withValues(alpha: 0.12),
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Checking your account...',

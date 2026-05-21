@@ -40,6 +40,12 @@ class AppTheme {
         selectionColor: AppColors.darkButton.withValues(alpha: 0.28),
         selectionHandleColor: AppColors.darkButton,
       ),
+      // Primary is pale green for branding; default progress indicators use
+      // colorScheme.primary and would be invisible on gate / green scaffolds.
+      progressIndicatorTheme: const ProgressIndicatorThemeData(
+        color: AppColors.darkButton,
+        circularTrackColor: Color(0x332D2D2D),
+      ),
     );
   }
 

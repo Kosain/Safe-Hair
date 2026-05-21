@@ -3,16 +3,14 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-pw.Widget _pdfMarkCircle(PdfColor border, PdfColor fill) {
-  return pw.Container(
-    width: 24,
-    height: 24,
-    decoration: pw.BoxDecoration(
-      shape: pw.BoxShape.circle,
-      border: pw.Border.all(color: border, width: 2),
-      color: fill,
-    ),
-  );
+/// Default PDF fonts omit many Unicode glyphs (en dash, NBSP), which looks like missing text.
+String _pdfSafeText(String raw) {
+  return raw
+      .replaceAll('\u2013', '-')
+      .replaceAll('\u2014', '-')
+      .replaceAll('\u2212', '-')
+      .replaceAll('\u00a0', ' ')
+      .replaceAll('\u202f', ' ');
 }
 
 /// Builds a multi-section scalp analysis PDF for sharing / printing.
@@ -45,18 +43,13 @@ Future<Uint8List> buildScalpAnalysisReportPdf({
         pw.SizedBox(
           width: double.infinity,
           height: 200,
-          child: pw.Stack(
-            children: [
-              pw.Positioned.fill(child: pw.Image(img, fit: pw.BoxFit.cover)),
-              pw.Positioned(left: 16, top: 40, child: _pdfMarkCircle(PdfColors.red900, PdfColors.red100)),
-              pw.Positioned(left: 96, top: 68, child: _pdfMarkCircle(PdfColor.fromInt(0xFFE65100), PdfColors.yellow100)),
-              pw.Positioned(right: 18, bottom: 28, child: _pdfMarkCircle(PdfColor.fromInt(0xFF00897B), PdfColor.fromInt(0xFFB2DFDB))),
-            ],
-          ),
+          child: pw.Image(img, fit: pw.BoxFit.contain),
         ),
         pw.SizedBox(height: 8),
         pw.Text(
-          'High risk – red circle | Dandruff / irritation – yellow circle | Low density / mild thinning – teal circle',
+          _pdfSafeText(
+            'Highlighted areas are rendered directly from AI overlay output (no template circles).',
+          ),
           style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
         ),
         pw.SizedBox(height: 12),
@@ -75,13 +68,18 @@ Future<Uint8List> buildScalpAnalysisReportPdf({
         ),
         pw.SizedBox(height: 12),
         pw.Text(
-          '$dateStr at $timeStr',
+          _pdfSafeText('$dateStr at $timeStr'),
           style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.normal, color: PdfColors.grey800),
         ),
         pw.SizedBox(height: 10),
         pw.Text(
-          'Patient: $patientName | Age: $patientAge | Gender: $patientGender',
+          _pdfSafeText('Patient: $patientName | Age: $patientAge | Gender: $patientGender'),
           style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          _pdfSafeText('Age and gender come from your saved profile, not from the photo.'),
+          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey600),
         ),
         pw.SizedBox(height: 12),
         pw.Text('Overall hair health score', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
@@ -92,7 +90,9 @@ Future<Uint8List> buildScalpAnalysisReportPdf({
         ),
         pw.SizedBox(height: 12),
         pw.Text(
-          'Hair Strength: $strength% | Scalp Health: $scalp% | Hair Damage: $damage% | Hair Fall Risk: $fall%',
+          _pdfSafeText(
+            'Hair Strength: $strength% | Scalp Health: $scalp% | Hair Damage: $damage% | Hair Fall Risk: $fall%',
+          ),
           style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey900),
         ),
         pw.SizedBox(height: 12),
@@ -122,18 +122,21 @@ Future<Uint8List> buildScalpAnalysisReportPdf({
             ...issues.map(
               (row) => pw.TableRow(
                 children: [
-                  _pdfCell(row['issue']?.toString() ?? ''),
-                  _pdfCell(row['severity']?.toString() ?? ''),
-                  _pdfCell(row['location']?.toString() ?? ''),
-                  _pdfCell(row['recommendation']?.toString() ?? ''),
-                  _pdfCell('${row['confidencePct'] ?? ''}%'),
+                  _pdfCell(_pdfSafeText(row['issue']?.toString() ?? '')),
+                  _pdfCell(_pdfSafeText(row['severity']?.toString() ?? '')),
+                  _pdfCell(_pdfSafeText(row['location']?.toString() ?? '')),
+                  _pdfCell(_pdfSafeText(row['recommendation']?.toString() ?? '')),
+                  _pdfCell(_pdfSafeText('${row['confidencePct'] ?? ''}%')),
                 ],
               ),
             ),
           ],
         ),
         pw.SizedBox(height: 12),
-        pw.Text('Estimated grafts needed: $graftEstimateText', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
+        pw.Text(
+          _pdfSafeText('Estimated grafts needed: $graftEstimateText'),
+          style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12),
+        ),
         pw.SizedBox(height: 12),
         pw.Text('Personalized recommendations', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
         pw.SizedBox(height: 8),
@@ -152,7 +155,9 @@ Future<Uint8List> buildScalpAnalysisReportPdf({
                   ),
                 ),
                 pw.SizedBox(width: 8),
-                pw.Expanded(child: pw.Text(r, style: const pw.TextStyle(fontSize: 11, lineSpacing: 1.35))),
+                pw.Expanded(
+                  child: pw.Text(_pdfSafeText(r), style: const pw.TextStyle(fontSize: 11, lineSpacing: 1.35)),
+                ),
               ],
             ),
           ),
@@ -172,7 +177,7 @@ pw.Widget _pdfCell(String text, {bool header = false}) {
   return pw.Padding(
     padding: const pw.EdgeInsets.all(5),
     child: pw.Text(
-      text,
+      _pdfSafeText(text),
       style: pw.TextStyle(
         fontSize: header ? 9 : 9,
         fontWeight: header ? pw.FontWeight.bold : pw.FontWeight.normal,

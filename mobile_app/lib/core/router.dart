@@ -51,6 +51,16 @@ GoRouter createRouter(AuthProvider authProvider) {
           path.startsWith('/login') || path.startsWith('/signup');
       final isOnboarding = path == '/' || path.startsWith('/onboarding');
 
+      // Web: bare host URL is usually "/" (not "#/role") — avoid Splash → Onboarding trap; go to role/login entry.
+      if (kIsWeb && path == '/') {
+        if (!isLoggedIn) return '/role';
+        if (!authProvider.profileChecked) return '/gate';
+        if (authProvider.role == 'doctor') {
+          return authProvider.isDoctorRegistered ? '/doctor-dashboard' : '/doctor-onboarding';
+        }
+        return authProvider.isPatientRegistered ? '/dashboard' : '/patient-details';
+      }
+
       // Public onboarding screens
       if (isOnboarding) return null;
 
@@ -208,9 +218,13 @@ GoRouter createRouter(AuthProvider authProvider) {
         path: '/my-appointments/book',
         builder: (_, state) {
           final extra = state.extra as Map<String, dynamic>? ?? const {};
+          final feeRaw = extra['consultationFeePkr'] ?? extra['fee'];
           return PatientAppointmentBookingScreen(
             doctorName: (extra['doctorName'] ?? 'Selected Doctor').toString(),
             doctorId: extra['doctorId']?.toString(),
+            clinicName: extra['clinicName']?.toString(),
+            city: extra['city']?.toString(),
+            consultationFeePkr: feeRaw is num ? feeRaw.toInt() : int.tryParse(feeRaw?.toString() ?? ''),
           );
         },
       ),

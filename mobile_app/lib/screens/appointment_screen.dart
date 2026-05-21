@@ -106,8 +106,9 @@ class _AppointmentScreenState extends State<AppointmentScreen> {
       try {
         final doctors = await ApiService().getDoctors();
         final match = doctors.firstWhere((d) => d['id'].toString() == doctorId, orElse: () => {});
-        if (match.isNotEmpty && match['consultation_fee'] != null) {
-          fee = int.tryParse(match['consultation_fee'].toString());
+        if (match.isNotEmpty) {
+          final feeRaw = match['consultationFee'] ?? match['consultation_fee'];
+          if (feeRaw != null) fee = int.tryParse(feeRaw.toString());
         }
       } catch (_) {}
     }
@@ -120,8 +121,11 @@ class _AppointmentScreenState extends State<AppointmentScreen> {
     try {
       final profile = await FirebaseService.getDoctorProfile(doctorId);
       final parsed = _parseWeeklyAvailability(profile?['availabilityWeekly']);
-      if (profile != null && profile['consultation_fee'] != null) {
-        fee = int.tryParse(profile['consultation_fee'].toString()) ?? fee;
+      if (profile != null) {
+        final feeRaw = profile['consultationFee'] ?? profile['consultation_fee'];
+        if (feeRaw != null) {
+          fee = int.tryParse(feeRaw.toString()) ?? fee;
+        }
       }
       // Calculate a brief timing summary
       String? timingSummary;
@@ -488,8 +492,24 @@ class _AppointmentScreenState extends State<AppointmentScreen> {
   Future<void> _confirmAppointment() async {
     final auth = context.read<AuthProvider>();
     final userId = auth.userId ?? 'unknown';
-    final doctorId = widget.doctorId ?? '1';
+
+    late final String doctorId;
     final doctorName = widget.doctorName ?? 'Dr. Pediatrician Purpieson';
+    if (FirebaseService.isInitialized) {
+      final id = widget.doctorId?.trim();
+      if (id == null || id.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Missing doctor id. Go back and choose a doctor from the live list so bookings reach the right account.'),
+          ),
+        );
+        return;
+      }
+      doctorId = id;
+    } else {
+      doctorId = widget.doctorId ?? '1';
+    }
     final reminderMin = int.tryParse(_selectedReminder!.replaceAll(RegExp(r'[^0-9]'), '')) ?? 30;
 
     setState(() => _loading = true);
@@ -545,7 +565,7 @@ class _AppointmentScreenState extends State<AppointmentScreen> {
       'timeSlot': _selectedTime!,
       'reminderMinutes': reminderMin,
       'consultationNotes': notes.isEmpty ? null : notes,
-      'status': 'confirmed',
+      'status': 'pending',
       'priority': priority,
       'createdAt': DateTime.now().toIso8601String(),
       if (patientName != null && patientName.isNotEmpty) 'patientName': patientName,

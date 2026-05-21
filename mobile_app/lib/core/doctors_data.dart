@@ -6,28 +6,28 @@ class DoctorsData {
       'name': 'Dr. Daniyal Ahmad',
       'location': 'Johar Town, Lahore',
       'rating': 4.0,
-      'consultation_fee': 12000,
+      'consultationFee': 12000,
     },
     {
       'id': '2',
       'name': 'Dr. Hina Alam',
       'location': 'DHA Rahbar, Lahore',
       'rating': 5.0,
-      'consultation_fee': 13500,
+      'consultationFee': 13500,
     },
     {
       'id': '3',
       'name': 'Dr. Ammar Hassan',
       'location': 'Samnabad, Lahore',
       'rating': 4.5,
-      'consultation_fee': 12500,
+      'consultationFee': 12500,
     },
     {
       'id': '4',
       'name': 'Dr. Ayesha Hassan',
       'location': 'Lake City, Lahore',
       'rating': 4.5,
-      'consultation_fee': 11800,
+      'consultationFee': 11800,
     },
   ];
 }

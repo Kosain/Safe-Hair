@@ -1,11 +1,13 @@
 import 'dart:math' as math;
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/firebase_service.dart';
 import 'scalp_report_detail_screen.dart';
 
 class _PendingRequest {
@@ -14,11 +16,13 @@ class _PendingRequest {
     required this.patientName,
     required this.dateTimeLabel,
     required this.reason,
+    this.patientUserId,
   });
   final String id;
   final String patientName;
   final String dateTimeLabel;
   final String reason;
+  final String? patientUserId;
 }
 
 class _ConfirmedAppointment {
@@ -27,11 +31,359 @@ class _ConfirmedAppointment {
     required this.patientName,
     required this.dateTimeLabel,
     required this.reason,
+    this.patientUserId,
   });
   final String id;
   final String patientName;
   final String dateTimeLabel;
   final String reason;
+  final String? patientUserId;
+}
+
+DateTime? _apptCreatedAt(Map<String, dynamic> m) {
+  final c = m['createdAt'];
+  if (c is Timestamp) return c.toDate();
+  if (c is String) return DateTime.tryParse(c);
+  return null;
+}
+
+bool _doctorApptShowOnHomePreview(Map<String, dynamic> m) {
+  final s = (m['status'] ?? 'confirmed').toString().toLowerCase();
+  return s != 'declined' && s != 'cancelled' && s != 'completed';
+}
+
+DateTime? _appointmentFirstSortTime(Map<String, dynamic> m) {
+  final c = _apptCreatedAt(m);
+  if (c != null) return c;
+  final ds = (m['date'] ?? '').toString().trim();
+  if (ds.isEmpty) return null;
+  return DateTime.tryParse('${ds}T12:00:00');
+}
+
+List<_DoctorStat> _doctorDashboardStatsFromAppointmentDocs(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  const window = Duration(days: 90);
+  final cutoff = DateTime.now().subtract(window);
+  final uidToFirst = <String, DateTime>{};
+  for (final d in docs) {
+    final m = d.data();
+    final uid = (m['userId'] ?? '').toString().trim();
+    if (uid.isEmpty) continue;
+    final t = _appointmentFirstSortTime(m) ?? DateTime(2000);
+    final prev = uidToFirst[uid];
+    if (prev == null || t.isBefore(prev)) uidToFirst[uid] = t;
+  }
+  var newP = 0;
+  var oldP = 0;
+  for (final first in uidToFirst.values) {
+    if (first.isAfter(cutoff)) {
+      newP++;
+    } else {
+      oldP++;
+    }
+  }
+  final totalPatients = uidToFirst.length;
+  final appointments = docs.length;
+  return [
+    _DoctorStat('Total Patients', '$totalPatients', '', true),
+    _DoctorStat('New Patients', '$newP', '', true),
+    _DoctorStat('Old Patients', '$oldP', '', true),
+    _DoctorStat('Appointments', '$appointments', '', true),
+  ];
+}
+
+List<(String, int)> _weekAppointmentTrendFromDocs(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  final counts = List<int>.filled(7, 0);
+  for (final d in docs) {
+    final c = _apptCreatedAt(d.data());
+    if (c == null) continue;
+    final idx = c.weekday - 1;
+    if (idx >= 0 && idx < 7) counts[idx]++;
+  }
+  return List.generate(7, (i) => (labels[i], counts[i]));
+}
+
+String _capitalizeStatusLabel(String raw) {
+  final s = raw.trim().toLowerCase();
+  if (s.isEmpty) return 'Confirmed';
+  return s[0].toUpperCase() + (s.length > 1 ? s.substring(1) : '');
+}
+
+/// Dashboard strip: pending + confirmed (excludes declined/cancelled/completed).
+List<(String, String, String, String, String?)> _doctorHomePreviewRowsFromDocs(
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+) {
+  final filtered = docs.where((d) => _doctorApptShowOnHomePreview(d.data())).toList();
+  filtered.sort((a, b) {
+    final ta = _appointmentFirstSortTime(a.data());
+    final tb = _appointmentFirstSortTime(b.data());
+    if (ta != null && tb != null) {
+      final c = ta.compareTo(tb);
+      if (c != 0) return c;
+    }
+    final ad = (a.data()['date'] ?? '').toString();
+    final bd = (b.data()['date'] ?? '').toString();
+    final c = ad.compareTo(bd);
+    if (c != 0) return c;
+    return (a.data()['timeSlot'] ?? '').toString().compareTo((b.data()['timeSlot'] ?? '').toString());
+  });
+  return filtered.take(8).map((d) {
+    final m = d.data();
+    final rawName = (m['patientName'] ?? m['patient_name'] ?? '').toString().trim();
+    final uid = (m['userId'] ?? '').toString().trim();
+    final patient = rawName.isNotEmpty ? rawName : (uid.isNotEmpty ? uid : 'Patient');
+    final date = (m['date'] ?? '').toString();
+    final time = (m['timeSlot'] ?? '').toString();
+    final reason = (m['consultationNotes'] ?? m['city'] ?? 'Consultation').toString();
+    final status = _capitalizeStatusLabel((m['status'] ?? 'confirmed').toString());
+    return (patient, [date, time].where((e) => e.isNotEmpty).join(' · '), reason, status, uid.isEmpty ? null : uid);
+  }).toList();
+}
+
+/// Resolves display name from [patient_details] when appointment has no [patientName].
+class _DoctorPatientTitle extends StatefulWidget {
+  const _DoctorPatientTitle({
+    required this.fallback,
+    required this.userId,
+    required this.style,
+  });
+
+  final String fallback;
+  final String? userId;
+  final TextStyle style;
+
+  @override
+  State<_DoctorPatientTitle> createState() => _DoctorPatientTitleState();
+}
+
+class _DoctorPatientTitleState extends State<_DoctorPatientTitle> {
+  String? _resolved;
+
+  @override
+  void initState() {
+    super.initState();
+    final t = widget.fallback.trim();
+    if (t.isNotEmpty && t != 'Patient') {
+      _resolved = t;
+      return;
+    }
+    final u = widget.userId?.trim();
+    if (u == null || u.isEmpty) {
+      _resolved = t.isEmpty ? 'Patient' : t;
+      return;
+    }
+    FirebaseService.getPatientDetails(u).then((snap) {
+      if (!mounted) return;
+      var name = widget.fallback.trim();
+      final data = snap?.data();
+      if (data != null) {
+        final n = (data['fullName'] ?? data['name'] ?? data['displayName'] ?? '').toString().trim();
+        if (n.isNotEmpty) name = n;
+      }
+      if (name.isEmpty) name = 'Patient';
+      setState(() => _resolved = name);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final v = _resolved;
+    if (v != null) {
+      return Text(v, maxLines: 1, overflow: TextOverflow.ellipsis, style: widget.style);
+    }
+    return Text(
+      widget.fallback.trim().isEmpty ? '…' : widget.fallback,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: widget.style,
+    );
+  }
+}
+
+/// Loads this doctor's Firestore appointments; accept/decline updates status and notifies the patient.
+class DoctorAppointmentsFirestore extends StatefulWidget {
+  const DoctorAppointmentsFirestore({super.key, required this.doctorId});
+
+  final String doctorId;
+
+  @override
+  State<DoctorAppointmentsFirestore> createState() => _DoctorAppointmentsFirestoreState();
+}
+
+class _DoctorAppointmentsFirestoreState extends State<DoctorAppointmentsFirestore> {
+  final Set<String> _busy = {};
+
+  Future<void> _accept(BuildContext context, String docId, Map<String, dynamic> data) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_busy.contains(docId)) return;
+    setState(() => _busy.add(docId));
+    try {
+      final mDoctorId = (data['doctorId'] ?? data['doctorID'] ?? '').toString();
+      if (mDoctorId != widget.doctorId) {
+        messenger.showSnackBar(const SnackBar(content: Text('This booking is not assigned to you.')));
+        return;
+      }
+      final ok = await FirebaseService.updateAppointment(docId, {'status': 'confirmed'});
+      if (!ok) {
+        if (!mounted) return;
+        messenger.showSnackBar(const SnackBar(content: Text('Could not confirm. Check connection and try again.')));
+        return;
+      }
+      final patientUid = (data['userId'] ?? '').toString();
+      if (patientUid.isNotEmpty) {
+        final dn = (data['doctorName'] ?? 'Your doctor').toString();
+        final dt = [data['date'], data['timeSlot']].where((e) => e != null && '$e'.trim().isNotEmpty).join(' ').trim();
+        await FirebaseService.addPatientNotification(
+          userId: patientUid,
+          title: 'Appointment confirmed',
+          body: dt.isEmpty ? '$dn confirmed your appointment request.' : '$dn confirmed your appointment for $dt.',
+          type: 'appointment',
+          extra: {'appointmentId': docId, 'event': 'confirmed'},
+        );
+      }
+      if (!mounted) return;
+      final name = (data['patientName'] ?? 'Patient').toString();
+      messenger.showSnackBar(SnackBar(content: Text('Confirmed with $name')));
+    } finally {
+      if (mounted) setState(() => _busy.remove(docId));
+    }
+  }
+
+  Future<void> _decline(BuildContext context, String docId, Map<String, dynamic> data) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_busy.contains(docId)) return;
+    setState(() => _busy.add(docId));
+    try {
+      final mDoctorId = (data['doctorId'] ?? data['doctorID'] ?? '').toString();
+      if (mDoctorId != widget.doctorId) {
+        messenger.showSnackBar(const SnackBar(content: Text('This booking is not assigned to you.')));
+        return;
+      }
+      final ok = await FirebaseService.updateAppointment(docId, {'status': 'declined'});
+      if (!ok) {
+        if (!mounted) return;
+        messenger.showSnackBar(const SnackBar(content: Text('Could not update. Try again.')));
+        return;
+      }
+      final patientUid = (data['userId'] ?? '').toString();
+      if (patientUid.isNotEmpty) {
+        final dn = (data['doctorName'] ?? 'The clinic').toString();
+        final dt = [data['date'], data['timeSlot']].where((e) => e != null && '$e'.trim().isNotEmpty).join(' ').trim();
+        await FirebaseService.addPatientNotification(
+          userId: patientUid,
+          title: 'Appointment update',
+          body: dt.isEmpty
+              ? '$dn is not available for that slot. Please choose another time.'
+              : '$dn could not accept your request for $dt. Please choose another time.',
+          type: 'appointment',
+          extra: {'appointmentId': docId, 'event': 'declined'},
+        );
+      }
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('Request declined')));
+    } finally {
+      if (mounted) setState(() => _busy.remove(docId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+      stream: FirebaseService.getAppointmentsForDoctor(widget.doctorId),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Could not load appointments.\n${snap.error}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.w600),
+              ),
+            ),
+          );
+        }
+        if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
+          return const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()));
+        }
+        final docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(snap.data ?? const []);
+        final pending = <_PendingRequest>[];
+        final confirmed = <_ConfirmedAppointment>[];
+        for (final d in docs) {
+          final m = d.data();
+          final stRaw = m['status'];
+          final st = stRaw == null ? '' : stRaw.toString().trim().toLowerCase();
+          final rawName = (m['patientName'] ?? m['patient_name'] ?? '').toString().trim();
+          final patientUid = (m['userId'] ?? '').toString().trim();
+          final patientName = rawName.isNotEmpty ? rawName : (patientUid.isNotEmpty ? patientUid : 'Patient');
+          final date = (m['date'] ?? '').toString();
+          final time = (m['timeSlot'] ?? '').toString();
+          final dateTimeLabel = [date, time].where((e) => e.isNotEmpty).join(' · ');
+          final reason = (m['consultationNotes'] ?? m['city'] ?? 'Consultation').toString();
+          if (st == 'declined' || st == 'cancelled' || st == 'completed') {
+            continue;
+          }
+          if (st == 'confirmed' || st == 'accepted') {
+            confirmed.add(
+              _ConfirmedAppointment(
+                id: d.id,
+                patientName: patientName,
+                patientUserId: patientUid.isEmpty ? null : patientUid,
+                dateTimeLabel: dateTimeLabel,
+                reason: reason,
+              ),
+            );
+          } else {
+            // pending, requested, empty, unknown — show under Requests so new bookings are never hidden
+            pending.add(
+              _PendingRequest(
+                id: d.id,
+                patientName: patientName,
+                patientUserId: patientUid.isEmpty ? null : patientUid,
+                dateTimeLabel: dateTimeLabel,
+                reason: reason,
+              ),
+            );
+          }
+        }
+
+        pending.sort((a, b) {
+          Map<String, dynamic>? ma;
+          Map<String, dynamic>? mb;
+          for (final e in docs) {
+            if (e.id == a.id) ma = e.data();
+            if (e.id == b.id) mb = e.data();
+          }
+          final ta = ma != null ? _apptCreatedAt(ma) : null;
+          final tb = mb != null ? _apptCreatedAt(mb) : null;
+          if (ta != null && tb != null) return tb.compareTo(ta);
+          return b.id.compareTo(a.id);
+        });
+        confirmed.sort((a, b) => a.dateTimeLabel.compareTo(b.dateTimeLabel));
+
+        return _DoctorAppointmentsPage(
+          pending: pending,
+          confirmed: confirmed,
+          onAccept: (id) {
+            for (final e in docs) {
+              if (e.id == id) {
+                _accept(context, id, e.data());
+                return;
+              }
+            }
+          },
+          onDecline: (id) {
+            for (final e in docs) {
+              if (e.id == id) {
+                _decline(context, id, e.data());
+                return;
+              }
+            }
+          },
+        );
+      },
+    );
+  }
 }
 
 class _DoctorPatientListItem {
@@ -89,13 +441,6 @@ class DoctorDashboardScreen extends StatefulWidget {
 }
 
 class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
-  static const _stats = <_DoctorStat>[
-    _DoctorStat('Total Patients', '1450', '+0.39%', true),
-    _DoctorStat('New Patients', '63', '+0.62%', true),
-    _DoctorStat('Old Patients', '313', '-0.12%', false),
-    _DoctorStat('Appointments', '1971', '-2%', false),
-  ];
-
   /// Life-stage groups; colors unchanged (was Child/Adult/Teen/Older palette).
   static const _ageGroups = <_DoctorAge>[
     _DoctorAge('Young Adult (18–30)', 170, 36, Color(0xFFF89A4C)),
@@ -104,93 +449,6 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
     _DoctorAge('Senior (65+)', 525, 12, Color(0xFF90CAF9)),
   ];
 
-  static const _trend = <(String, int)>[
-    ('Mon', 22),
-    ('Tue', 28),
-    ('Wed', 24),
-    ('Thu', 30),
-    ('Fri', 26),
-    ('Sat', 18),
-    ('Sun', 20),
-  ];
-
-  /// Shared across doctor dashboard / appointments routes so accept/decline persists in-session.
-  static final List<_PendingRequest> _pendingRequests = [
-    const _PendingRequest(
-      id: 'r1',
-      patientName: 'John Doe',
-      dateTimeLabel: 'May 5, 2026 at 10:00 AM',
-      reason: 'Hair thinning check',
-    ),
-    const _PendingRequest(
-      id: 'r2',
-      patientName: 'Hina Ali',
-      dateTimeLabel: 'May 6, 2026 at 2:30 PM',
-      reason: 'Scalp inflammation review',
-    ),
-    const _PendingRequest(
-      id: 'r3',
-      patientName: 'Ahmed Raza',
-      dateTimeLabel: 'May 8, 2026 at 9:00 AM',
-      reason: 'Dandruff consultation',
-    ),
-  ];
-
-  static final List<_ConfirmedAppointment> _confirmedAppointments = [
-    const _ConfirmedAppointment(
-      id: 'c1',
-      patientName: 'Sana Khan',
-      dateTimeLabel: 'May 10, 2026 at 11:00 AM',
-      reason: 'Post treatment follow-up',
-    ),
-    const _ConfirmedAppointment(
-      id: 'c2',
-      patientName: 'Fatima Noor',
-      dateTimeLabel: 'May 12, 2026 at 1:15 PM',
-      reason: 'Hair loss progression',
-    ),
-    const _ConfirmedAppointment(
-      id: 'c3',
-      patientName: 'Umer Tariq',
-      dateTimeLabel: 'May 14, 2026 at 10:45 AM',
-      reason: 'Routine checkup',
-    ),
-  ];
-
-  List<(String, String, String, String)> get _dashboardUpcomingRows =>
-      _confirmedAppointments.map((e) => (e.patientName, e.dateTimeLabel, e.reason, 'Confirmed')).toList();
-
-  void _acceptRequest(String id) {
-    final idx = _pendingRequests.indexWhere((r) => r.id == id);
-    if (idx < 0) return;
-    final r = _pendingRequests[idx];
-    setState(() {
-      _pendingRequests.removeAt(idx);
-      _confirmedAppointments.add(
-        _ConfirmedAppointment(
-          id: 'c_${DateTime.now().millisecondsSinceEpoch}',
-          patientName: r.patientName,
-          dateTimeLabel: r.dateTimeLabel,
-          reason: r.reason,
-        ),
-      );
-    });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Appointment confirmed with ${r.patientName}')),
-    );
-  }
-
-  void _declineRequest(String id) {
-    final idx = _pendingRequests.indexWhere((r) => r.id == id);
-    if (idx < 0) return;
-    setState(() {
-      _pendingRequests.removeAt(idx);
-    });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment declined')));
-  }
-
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
@@ -198,32 +456,53 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
     final active =
         widget.section == 'appointments' || widget.section == 'patients' ? widget.section : 'dashboard';
     final routePath = GoRouterState.of(context).uri.path;
+    final doctorId = auth.userId;
 
     final Widget bodyBelowTopBar;
     if (active == 'appointments') {
       bodyBelowTopBar = Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-        child: _DoctorAppointmentsPage(
-          pending: _pendingRequests,
-          confirmed: _confirmedAppointments,
-          onAccept: _acceptRequest,
-          onDecline: _declineRequest,
-        ),
+        child: doctorId == null || doctorId.isEmpty
+            ? const Center(child: Text('Sign in as a doctor to manage appointments.'))
+            : DoctorAppointmentsFirestore(doctorId: doctorId),
       );
     } else if (active == 'patients') {
       bodyBelowTopBar = const Padding(
         padding: EdgeInsets.fromLTRB(16, 8, 16, 96),
         child: _DoctorPatientsSearchBody(),
       );
-    } else {
+    } else if (doctorId == null || doctorId.isEmpty) {
       bodyBelowTopBar = SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 100),
         child: _DoctorDashboardMain(
-          stats: _stats,
+          stats: _doctorDashboardStatsFromAppointmentDocs(const []),
           ageGroups: _ageGroups,
-          upcoming: _dashboardUpcomingRows,
-          trend: _trend,
+          upcoming: const [],
+          trend: _weekAppointmentTrendFromDocs(const []),
         ),
+      );
+    } else {
+      bodyBelowTopBar = StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+        stream: FirebaseService.getAppointmentsForDoctor(doctorId),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: Center(child: Text('Could not load appointments: ${snap.error}')),
+            );
+          }
+          final docs = snap.data ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+          final upcoming = _doctorHomePreviewRowsFromDocs(docs);
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 100),
+            child: _DoctorDashboardMain(
+              stats: _doctorDashboardStatsFromAppointmentDocs(docs),
+              ageGroups: _ageGroups,
+              upcoming: upcoming,
+              trend: _weekAppointmentTrendFromDocs(docs),
+            ),
+          );
+        },
       );
     }
 
@@ -600,7 +879,7 @@ class _DoctorDashboardMain extends StatelessWidget {
 
   final List<_DoctorStat> stats;
   final List<_DoctorAge> ageGroups;
-  final List<(String, String, String, String)> upcoming;
+  final List<(String, String, String, String, String?)> upcoming;
   final List<(String, int)> trend;
 
   @override
@@ -643,7 +922,7 @@ class _DoctorDashboardMain extends StatelessWidget {
 
 class _UpcomingAppointmentsCard extends StatelessWidget {
   const _UpcomingAppointmentsCard({required this.items});
-  final List<(String, String, String, String)> items;
+  final List<(String, String, String, String, String?)> items;
 
   @override
   Widget build(BuildContext context) {
@@ -664,7 +943,7 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
             child: items.isEmpty
                 ? const Center(
                     child: Text(
-                      'No confirmed appointments',
+                      'No appointments yet',
                       style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.w600),
                     ),
                   )
@@ -690,10 +969,9 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            child: Text(
-                              item.$1,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            child: _DoctorPatientTitle(
+                              fallback: item.$1,
+                              userId: item.$5,
                               style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black),
                             ),
                           ),
@@ -754,6 +1032,27 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                           ),
                         ],
                       ),
+                      if (item.$4.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: item.$4.toLowerCase() == 'pending' ? const Color(0xFFFFF3E0) : const Color(0xFFE8F5E9),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              item.$4,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: item.$4.toLowerCase() == 'pending' ? const Color(0xFFE65100) : const Color(0xFF2E7D32),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 );
@@ -914,9 +1213,15 @@ class _StatCard extends StatelessWidget {
           const SizedBox(height: 8),
           Row(
             children: [
-              Icon(stat.positive ? Icons.trending_up : Icons.trending_down, color: trendColor, size: 18),
-              const SizedBox(width: 2),
-              Text(stat.change, style: TextStyle(color: trendColor, fontWeight: FontWeight.w700, fontSize: 13)),
+              if (stat.change.trim().isNotEmpty) ...[
+                Icon(stat.positive ? Icons.trending_up : Icons.trending_down, color: trendColor, size: 18),
+                const SizedBox(width: 2),
+                Text(stat.change, style: TextStyle(color: trendColor, fontWeight: FontWeight.w700, fontSize: 13)),
+              ] else
+                Text(
+                  'Live from your bookings',
+                  style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600, fontSize: 12),
+                ),
             ],
           ),
         ],
@@ -1115,8 +1420,9 @@ class _AppointmentRequestsList extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        r.patientName,
+                      _DoctorPatientTitle(
+                        fallback: r.patientName,
+                        userId: r.patientUserId,
                         style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.black),
                       ),
                       const SizedBox(height: 10),
@@ -1238,8 +1544,9 @@ class _AppointmentUpcomingList extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: Text(
-                        a.patientName,
+                      child:                       _DoctorPatientTitle(
+                        fallback: a.patientName,
+                        userId: a.patientUserId,
                         style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.black),
                       ),
                     ),

@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/validators.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/firebase_service.dart';
 import '../../widgets/animated_primary_button.dart';
+import '../../widgets/firebase_init_banner.dart';
 import '../../widgets/safe_hair_auth_shell.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -45,6 +47,8 @@ class _LoginScreenState extends State<LoginScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const FirebaseInitBanner(),
+          const SizedBox(height: 12),
           ...[
             Row(
               children: [
@@ -365,13 +369,9 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!mounted) return;
         context.go('/gate');
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Google sign-in failed. Enable Google provider in Firebase Auth and ensure web app config is correct (run flutterfire configure).',
-            ),
-          ),
-        );
+        final msg = FirebaseService.lastAuthError ??
+            'Google sign-in failed. In Firebase Console enable Email/Password and Google under Authentication → Sign-in method. On web, add your site URL under Authentication → Settings → Authorized domains.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     }
   }
@@ -386,9 +386,9 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!mounted) return;
         context.go('/gate');
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Facebook sign-in failed. Enable it in Firebase Console.')),
-        );
+        final msg = FirebaseService.lastAuthError ??
+            'Facebook sign-in failed. Enable the Facebook provider in Firebase Console and complete the OAuth settings.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     }
   }

@@ -16,6 +16,28 @@ class FirebaseService {
   static String? lastAuthError;
   static String? lastInitError;
 
+  /// Merges `doctorId` and legacy `doctorID` matches without a Firestore OR query (avoids composite-index / web issues).
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _appointmentDocsForDoctorMergedOnce(
+    String doctorId,
+  ) async {
+    if (!_initialized || doctorId.isEmpty) return [];
+    try {
+      final a = await firestore.collection('appointments').where('doctorId', isEqualTo: doctorId).get();
+      final b = await firestore.collection('appointments').where('doctorID', isEqualTo: doctorId).get();
+      final byId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+      for (final d in a.docs) {
+        byId[d.id] = d;
+      }
+      for (final d in b.docs) {
+        byId[d.id] = d;
+      }
+      return byId.values.toList();
+    } catch (e, st) {
+      debugPrint('_appointmentDocsForDoctorMergedOnce: $e\n$st');
+      return [];
+    }
+  }
+
   /// Cleared on each `savePatientDetails` call. Explains failure when result is null.
   static String? lastPatientSaveError;
 
@@ -221,7 +243,11 @@ class FirebaseService {
   }
 
   static Future<UserCredential?> signInWithGoogle() async {
-    if (!_initialized) return null;
+    lastAuthError = null;
+    if (!_initialized) {
+      lastAuthError = lastInitError ?? 'Firebase is not initialized. Email/Google sign-in cannot run.';
+      return null;
+    }
     try {
       if (kIsWeb) {
         final provider = GoogleAuthProvider();
@@ -240,12 +266,17 @@ class FirebaseService {
       return await FirebaseAuth.instance.signInWithCredential(cred);
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
+      lastAuthError = 'Google sign-in failed. On web, add this domain under Firebase Console → Authentication → Settings → Authorized domains. On Android, add SHA-256 to the app and download a fresh google-services.json.';
     }
     return null;
   }
 
   static Future<UserCredential?> signInWithFacebook() async {
-    if (!_initialized) return null;
+    lastAuthError = null;
+    if (!_initialized) {
+      lastAuthError = lastInitError ?? 'Firebase is not initialized. Facebook sign-in cannot run.';
+      return null;
+    }
     try {
       if (kIsWeb) {
         final provider = FacebookAuthProvider();
@@ -257,6 +288,7 @@ class FirebaseService {
       return await FirebaseAuth.instance.signInWithCredential(cred);
     } catch (e) {
       debugPrint('Facebook sign-in failed: $e');
+      lastAuthError = 'Facebook sign-in failed. Enable the Facebook provider in Firebase Console and add the OAuth redirect URL it shows for your platform.';
     }
     return null;
   }
@@ -325,22 +357,53 @@ class FirebaseService {
     }
   }
 
+  /// Row map for booking lists. [id] is always the Firestore document id (`doctors/{uid}`) — same uid the doctor uses to sign in (seed + app use this).
+  static Map<String, dynamic> _doctorRowFromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
+    final data = Map<String, dynamic>.from(d.data() ?? {});
+    data['id'] = d.id;
+    data['firestoreDocId'] = d.id;
+    return data;
+  }
+
   static Future<List<Map<String, dynamic>>> getVerifiedDoctorsOnce() async {
     if (!_initialized) return [];
     try {
       final snap = await firestore.collection('doctors').where('profileCompleted', isEqualTo: true).get();
-      final rows = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
-      rows.sort((a, b) {
-        final ac = ((a['activeDoctorsCount'] ?? 0) is num)
-            ? (a['activeDoctorsCount'] as num).toInt()
-            : int.tryParse('${a['activeDoctorsCount'] ?? 0}') ?? 0;
-        final bc = ((b['activeDoctorsCount'] ?? 0) is num)
-            ? (b['activeDoctorsCount'] as num).toInt()
-            : int.tryParse('${b['activeDoctorsCount'] ?? 0}') ?? 0;
-        return bc.compareTo(ac);
-      });
+      final rows = snap.docs.map(_doctorRowFromDoc).toList();
+      _sortDoctorRowsForPicker(rows);
       return rows;
     } catch (_) {}
+    return [];
+  }
+
+  static void _sortDoctorRowsForPicker(List<Map<String, dynamic>> rows) {
+    rows.sort((a, b) {
+      final ac = ((a['activeDoctorsCount'] ?? 0) is num)
+          ? (a['activeDoctorsCount'] as num).toInt()
+          : int.tryParse('${a['activeDoctorsCount'] ?? 0}') ?? 0;
+      final bc = ((b['activeDoctorsCount'] ?? 0) is num)
+          ? (b['activeDoctorsCount'] as num).toInt()
+          : int.tryParse('${b['activeDoctorsCount'] ?? 0}') ?? 0;
+      return bc.compareTo(ac);
+    });
+  }
+
+  /// For patient booking UIs. Uses verified doctors first; if none, any `doctors/{uid}` so [id] is always a real
+  /// Firebase uid — never placeholder strings like `d1` or `1`, which would make the doctor dashboard query empty.
+  static Future<List<Map<String, dynamic>>> getDoctorsForPatientBookingOnce() async {
+    if (!_initialized) return [];
+    try {
+      final verified = await getVerifiedDoctorsOnce();
+      if (verified.isNotEmpty) return verified;
+
+      final snap = await firestore.collection('doctors').limit(100).get();
+      if (snap.docs.isEmpty) return [];
+      final rows = snap.docs.map(_doctorRowFromDoc).toList();
+      _sortDoctorRowsForPicker(rows);
+      return rows;
+    } catch (e, st) {
+      debugPrint('getDoctorsForPatientBookingOnce: $e\n$st');
+    }
     return [];
   }
 
@@ -351,20 +414,17 @@ class FirebaseService {
   }) async {
     if (!_initialized) return false;
     try {
-      final snap = await firestore
-          .collection('appointments')
-          .where('doctorId', isEqualTo: doctorId)
-          .where('date', isEqualTo: date)
-          .where('timeSlot', isEqualTo: timeSlot)
-          .limit(1)
-          .get();
-      // If it exists, treat as booked to prevent double-booking.
-      if (snap.docs.isEmpty) return false;
-      final data = snap.docs.first.data();
-      final s = (data['status'] ?? 'confirmed').toString().toLowerCase();
-      // Finished or rejected bookings free the slot for a new reservation.
-      if (s == 'cancelled' || s == 'declined' || s == 'completed') return false;
-      return s == 'confirmed' || s == 'pending' || s.isEmpty;
+      final docs = await _appointmentDocsForDoctorMergedOnce(doctorId);
+      for (final doc in docs) {
+        final data = doc.data();
+        if ((data['date'] ?? '').toString() != date) continue;
+        final ts = data['timeSlot'] ?? data['time_slot'];
+        if (ts == null || ts.toString() != timeSlot) continue;
+        final s = (data['status'] ?? 'confirmed').toString().toLowerCase();
+        if (s == 'cancelled' || s == 'declined' || s == 'completed') continue;
+        if (s == 'confirmed' || s == 'pending' || s.isEmpty) return true;
+      }
+      return false;
     } catch (_) {}
     return false;
   }
@@ -377,12 +437,9 @@ class FirebaseService {
   }) async {
     if (!_initialized) return {};
     try {
-      final snap = await firestore
-          .collection('appointments')
-          .where('doctorId', isEqualTo: doctorId)
-          .get();
+      final merged = await _appointmentDocsForDoctorMergedOnce(doctorId);
       final booked = <String>{};
-      for (final doc in snap.docs) {
+      for (final doc in merged) {
         final data = doc.data();
         final docDate = (data['date'] ?? data['day'] ?? '').toString();
         if (docDate != date) continue;
@@ -400,11 +457,54 @@ class FirebaseService {
     return {};
   }
 
-  static Stream<QuerySnapshot<Map<String, dynamic>>> getAppointmentsForDoctor(String doctorId) {
-    return firestore
-        .collection('appointments')
-        .where('doctorId', isEqualTo: doctorId)
-        .snapshots();
+  /// Live appointments for this doctor. Uses two equality listeners and merges by document id (no OR query).
+  static Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getAppointmentsForDoctor(String doctorId) {
+    if (!_initialized || doctorId.isEmpty) {
+      return Stream.value(const <QueryDocumentSnapshot<Map<String, dynamic>>>[]);
+    }
+    return Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>.multi((controller) {
+      QuerySnapshot<Map<String, dynamic>>? snapLower;
+      QuerySnapshot<Map<String, dynamic>>? snapUpper;
+
+      void emit() {
+        final byId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+        for (final d in snapLower?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[]) {
+          byId[d.id] = d;
+        }
+        for (final d in snapUpper?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[]) {
+          byId[d.id] = d;
+        }
+        controller.add(byId.values.toList());
+      }
+
+      final sub1 = firestore
+          .collection('appointments')
+          .where('doctorId', isEqualTo: doctorId)
+          .snapshots()
+          .listen(
+        (s) {
+          snapLower = s;
+          emit();
+        },
+        onError: controller.addError,
+      );
+      final sub2 = firestore
+          .collection('appointments')
+          .where('doctorID', isEqualTo: doctorId)
+          .snapshots()
+          .listen(
+        (s) {
+          snapUpper = s;
+          emit();
+        },
+        onError: controller.addError,
+      );
+
+      controller.onCancel = () {
+        sub1.cancel();
+        sub2.cancel();
+      };
+    });
   }
 
   // ============ Scalp Analyses ============
@@ -460,9 +560,19 @@ class FirebaseService {
   static Future<String?> saveAppointment(Map<String, dynamic> data) async {
     if (!_initialized) return null;
     try {
-      final doc = await firestore.collection('appointments').add(data);
+      final merged = Map<String, dynamic>.from(data);
+      final did = (merged['doctorId'] ?? merged['doctorID'])?.toString().trim();
+      if (did == null || did.isEmpty) {
+        debugPrint('saveAppointment: refused — missing doctorId/doctorID (booking would not show on any doctor).');
+        return null;
+      }
+      merged['doctorId'] = did;
+      merged['doctorID'] = did;
+      final doc = await firestore.collection('appointments').add(merged);
       return doc.id;
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('saveAppointment failed: $e\n$st');
+    }
     return null;
   }
 
@@ -494,6 +604,67 @@ class FirebaseService {
         .snapshots();
   }
 
+  /// In-app inbox for patients (e.g. appointment accepted by doctor). Any signed-in user may create.
+  static Future<String?> addPatientNotification({
+    required String userId,
+    required String title,
+    required String body,
+    String type = 'appointment',
+    Map<String, dynamic>? extra,
+  }) async {
+    if (!_initialized) return null;
+    try {
+      final ref = await firestore.collection('patient_notifications').add({
+        'userId': userId,
+        'title': title,
+        'body': body,
+        'type': type,
+        'read': false,
+        'createdAt': FieldValue.serverTimestamp(),
+        ...?extra,
+      });
+      return ref.id;
+    } catch (e, st) {
+      debugPrint('addPatientNotification: $e\n$st');
+      return null;
+    }
+  }
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> patientNotificationsStream(String userId) {
+    return firestore.collection('patient_notifications').where('userId', isEqualTo: userId).snapshots();
+  }
+
+  static Future<bool> markPatientNotificationRead(String docId) async {
+    if (!_initialized) return false;
+    try {
+      await firestore.collection('patient_notifications').doc(docId).update({'read': true});
+      return true;
+    } catch (e, st) {
+      debugPrint('markPatientNotificationRead: $e\n$st');
+      return false;
+    }
+  }
+
+  /// Drops nulls, never stores base64 images in Firestore (use Storage URL only), trims long strings.
+  static Map<String, dynamic> _sanitizePatientDetailsPayload(Map<String, dynamic> data) {
+    const maxStr = 12000;
+    final out = <String, dynamic>{};
+    for (final e in data.entries) {
+      if (e.value == null) continue;
+      final k = e.key.toString();
+      if (k == 'profileImageBase64' || k.toLowerCase().contains('base64')) {
+        continue;
+      }
+      final v = e.value;
+      if (v is String && v.length > maxStr) {
+        out[k] = '${v.substring(0, maxStr)}…';
+        continue;
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+
   // ============ Patient Details ============
   static Future<String?> savePatientDetails(Map<String, dynamic> data) async {
     lastPatientSaveError = null;
@@ -508,21 +679,55 @@ class FirebaseService {
     }
 
     try {
-      // Always use the signed-in user's uid as document id (must match Firestore rules).
-      await firestore.collection('patient_details').doc(authUid).set(
-        {
-          ...data,
-          'userId': authUid,
-          'user_id': authUid,
-          'profileCompleted': true,
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
-        SetOptions(merge: true),
-      );
+      await auth.currentUser?.getIdToken(true);
+    } catch (_) {}
+
+    Map<String, dynamic> buildPayload(Map<String, dynamic> raw) {
+      final payload = _sanitizePatientDetailsPayload(Map<String, dynamic>.from(raw));
+      return {
+        ...payload,
+        'userId': authUid,
+        'user_id': authUid,
+        'profileCompleted': true,
+        'updatedAt': DateTime.now().toIso8601String(),
+      };
+    }
+
+    Future<void> doSet(Map<String, dynamic> body) async {
+      await firestore.collection('patient_details').doc(authUid).set(body, SetOptions(merge: true));
+    }
+
+    try {
+      await doSet(buildPayload(data));
       return authUid;
     } on FirebaseException catch (e) {
-      lastPatientSaveError = _patientSaveMessageForFirebase(e);
       debugPrint('savePatientDetails FirebaseException: ${e.code} ${e.message}');
+      final retryable = e.code == 'invalid-argument' ||
+          e.code == 'failed-precondition' ||
+          (e.message?.toLowerCase().contains('size') ?? false) ||
+          (e.message?.toLowerCase().contains('exceed') ?? false);
+      if (retryable) {
+        try {
+          final minimal = <String, dynamic>{
+            'userId': authUid,
+            'user_id': authUid,
+            'name': (data['name'] ?? '').toString().trim(),
+            'gender': data['gender'],
+            'mobile': (data['mobile'] ?? '').toString(),
+            'address': (data['address'] ?? '').toString(),
+            'profileImageUrl': (data['profileImageUrl'] ?? '').toString().trim(),
+            'profileCompleted': true,
+            'updatedAt': DateTime.now().toIso8601String(),
+          };
+          await doSet(_sanitizePatientDetailsPayload(minimal));
+          return authUid;
+        } on FirebaseException catch (e2) {
+          lastPatientSaveError = _patientSaveMessageForFirebase(e2);
+          debugPrint('savePatientDetails minimal retry: ${e2.code} ${e2.message}');
+          return null;
+        }
+      }
+      lastPatientSaveError = _patientSaveMessageForFirebase(e);
       return null;
     } catch (e) {
       lastPatientSaveError =
@@ -533,15 +738,19 @@ class FirebaseService {
   }
 
   static String _patientSaveMessageForFirebase(FirebaseException e) {
+    final detail = '${e.code}${e.message != null && e.message!.isNotEmpty ? ': ${e.message}' : ''}';
     switch (e.code) {
       case 'permission-denied':
-        return 'Could not save your profile (Firebase). Check internet and Firestore rules, then try again.';
+        return 'Firebase permission denied ($detail). In Firebase Console → Firestore → Rules, publish rules that allow writes to patient_details/{your user id} for signed-in users (see repo firebase/firestore.rules), then run: firebase deploy --only firestore:rules';
+      case 'invalid-argument':
+      case 'failed-precondition':
+        return e.message ??
+            'Profile data was rejected ($detail). Try skipping the profile photo or use a smaller image.';
       case 'unavailable':
       case 'deadline-exceeded':
         return 'Firebase is temporarily unavailable. Check your internet connection and try again.';
       default:
-        return e.message ??
-            'Could not save your profile (Firebase). Check internet and Firestore rules, then try again.';
+        return e.message ?? 'Firebase: $detail';
     }
   }
 
@@ -769,16 +978,30 @@ class FirebaseService {
       final scanRef = patientRef.collection('hair_scans').doc();
       final reportRef = patientRef.collection('reports').doc(reportDocId);
 
+      String? routineTip;
+      final rec = reportPayload['recommendations'];
+      if (rec is List) {
+        for (final e in rec) {
+          final s = e?.toString().trim();
+          if (s != null && s.isNotEmpty) {
+            routineTip = s.length > 200 ? '${s.substring(0, 197)}...' : s;
+            break;
+          }
+        }
+      }
+
       final batch = firestore.batch();
+      final patientPatch = <String, dynamic>{
+        'hairStrengthPct': strength,
+        'hairScalpHealthPct': scalp,
+        'hairDamageLevelPct': damage,
+        'hairFallRiskPct': fall,
+        'hairLastScanAt': FieldValue.serverTimestamp(),
+      };
+      if (routineTip != null) patientPatch['hairLatestRoutineTip'] = routineTip;
       batch.set(
         patientRef,
-        {
-          'hairStrengthPct': strength,
-          'hairScalpHealthPct': scalp,
-          'hairDamageLevelPct': damage,
-          'hairFallRiskPct': fall,
-          'hairLastScanAt': FieldValue.serverTimestamp(),
-        },
+        patientPatch,
         SetOptions(merge: true),
       );
       batch.set(scanRef, {

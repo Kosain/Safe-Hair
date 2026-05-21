@@ -106,6 +106,10 @@ def _collect_samples(dataset_root: Path) -> Tuple[np.ndarray, np.ndarray]:
                 (1.05, 8),
                 (1.15, 0),
                 (0.85, 0),
+                (1.0, -14),
+                (1.0, 14),
+                (0.92, 4),
+                (1.08, -4),
             ]
             for alpha, beta in aug_specs:
                 aug = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)

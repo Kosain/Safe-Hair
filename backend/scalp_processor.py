@@ -27,6 +27,28 @@ _CNN_SESSIONS = {}
 _BALD_REGRESSOR = None
 
 
+def _has_frontal_face(img_bgr: np.ndarray) -> bool:
+    """
+    Conservative face check used only to gate frontal mode.
+    If no face is found, prefer top/crown pipeline.
+    """
+    try:
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        detector = cv2.CascadeClassifier(cascade_path)
+        if detector.empty():
+            return False
+        faces = detector.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60),
+        )
+        return len(faces) > 0
+    except Exception:
+        return False
+
+
 def _bytes_to_image(image_bytes: bytes) -> np.ndarray:
     """Decode image bytes to BGR array."""
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -98,6 +120,8 @@ def _is_likely_vertex_top_view(img_bgr: np.ndarray) -> bool:
         return True
     if bottom_skin < 0.09 and top_skin < 0.055 and texture_in_roi > 0.21:
         return True
+    if _scalp_midline_part_boost(img_bgr) >= 0.14:
+        return True
     return False
 
 
@@ -122,7 +146,42 @@ def _vertex_view_score(img_bgr: np.ndarray) -> float:
     texture_in_roi = float(np.sum((lap > 7.5) & (head_roi > 0))) / roi_pixels
     # Top-view usually has low facial skin bands and high texture in scalp ROI.
     score = (texture_in_roi * 1.9) + max(0.0, 0.08 - top_skin) * 2.0 + max(0.0, 0.12 - bottom_skin) * 1.4
+    score += _scalp_midline_part_boost(img_bgr)
     return float(np.clip(score, 0.0, 1.0))
+
+
+def _scalp_midline_part_boost(img_bgr: np.ndarray) -> float:
+    """
+    Long hair parted to expose the midline scalp (common in clinical checks, any gender):
+    central low-saturation strip with hairier, higher-texture sides. Nudges routing toward
+    vertex/crown processing instead of misclassifying as a frontal face selfie.
+    """
+    h, w = img_bgr.shape[:2]
+    if h < 120 or w < 120:
+        return 0.0
+    head = _head_roi_mask(h, w) > 0
+    y0, y1 = int(h * 0.28), int(h * 0.74)
+    xc0, xc1 = int(w * 0.43), int(w * 0.57)
+    band = head[y0:y1, xc0:xc1]
+    if band.sum() < 100:
+        return 0.0
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[y0:y1, xc0:xc1, 1].astype(np.float32)
+    val = hsv[y0:y1, xc0:xc1, 2].astype(np.float32)
+    scalp_like = ((sat < 92) & (val > 50) & band).astype(np.float32)
+    frac = float(scalp_like.sum() / (band.sum() + 1e-6))
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
+    lx0, lx1 = int(w * 0.12), int(w * 0.34)
+    rx0, rx1 = int(w * 0.66), int(w * 0.88)
+    mL = head[y0:y1, lx0:lx1]
+    mR = head[y0:y1, rx0:rx1]
+    left_mean = float(np.mean(lap[y0:y1, lx0:lx1][mL])) if mL.any() else 0.0
+    right_mean = float(np.mean(lap[y0:y1, rx0:rx1][mR])) if mR.any() else 0.0
+    side_lap = 0.5 * (left_mean + right_mean)
+    if frac > 0.30 and side_lap > 6.0:
+        return float(np.clip((frac - 0.30) * 0.75 + min(side_lap / 24.0, 1.0) * 0.14, 0.0, 0.30))
+    return 0.0
 
 
 def _frontal_head_guard_mask(h: int, w: int) -> np.ndarray:
@@ -462,12 +521,32 @@ def _draw_vertex_bald_thin_overlay(
     keyhole = _vertex_keyhole_mask(h, w)
     thin_k = cv2.bitwise_and(thin_mask, keyhole)
     bald_k = cv2.bitwise_and(bald_mask, keyhole)
+    seed0 = cv2.bitwise_or(bald_k, thin_k)
+    # Avoid painting unrelated regions when almost nothing is detected.
+    if cv2.countNonZero(seed0) < 22:
+        return
+    # Keep all tinting inside a band around AI-detected scalp only (not distant hair/background).
+    k_band = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (33, 33))
+    seed_band = cv2.dilate(seed0, k_band)
+    thin_k = cv2.bitwise_and(thin_k, seed_band)
+    bald_k = cv2.bitwise_and(bald_k, seed_band)
     line_thickness = max(5, min(h, w) // 42)
-    orange_bgr = (0, 165, 255) # Orange color for the contour outline
-    fill_thin_bgr = (200, 255, 80)
-    fill_bald_bgr = (0, 95, 255)
+    red_bgr = (35, 35, 235)       # high-risk bald zone
+    yellow_bgr = (0, 215, 255)    # thinning zone
+    green_bgr = (80, 200, 90)     # low-density fringe
 
-    for mask, color, alpha in ((thin_k, fill_thin_bgr, 0.20), (bald_k, fill_bald_bgr, 0.17)):
+    # derive a low-density fringe around thin zones for green marking
+    k_ring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    low_k = cv2.dilate(thin_k, k_ring)
+    low_k = cv2.bitwise_and(low_k, cv2.bitwise_not(thin_k))
+    low_k = cv2.bitwise_and(low_k, keyhole)
+    low_k = cv2.bitwise_and(low_k, seed_band)
+
+    for mask, color, alpha in (
+        (low_k, green_bgr, 0.10),
+        (thin_k, yellow_bgr, 0.22),
+        (bald_k, red_bgr, 0.20),
+    ):
         if cv2.countNonZero(mask) < 8:
             continue
         layer = np.zeros_like(overlay_bgr)
@@ -480,29 +559,45 @@ def _draw_vertex_bald_thin_overlay(
         np.copyto(overlay_bgr, blended)
 
     mask_combined = cv2.bitwise_or(bald_k, thin_k)
-    # Give the mask a slight blur and threshold to get a smoother contour
+    # Keep focus near crown center so side artifacts are suppressed.
+    yy, xx = np.indices((h, w))
+    cx, cy = (w * 0.5), (h * 0.44)
+    rx, ry = (w * 0.23), (h * 0.25)
+    center_prior = ((((xx - cx) ** 2) / (rx ** 2 + 1e-6) + ((yy - cy) ** 2) / (ry ** 2 + 1e-6)) <= 1.0).astype(np.uint8) * 255
+    mask_combined = cv2.bitwise_and(mask_combined, center_prior)
+
     blur_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     mask_combined = cv2.morphologyEx(mask_combined, cv2.MORPH_CLOSE, blur_kernel)
     mask_combined = cv2.morphologyEx(mask_combined, cv2.MORPH_OPEN, blur_kernel)
 
     contours, _ = cv2.findContours(mask_combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Sort by area, keep the largest contour corresponding to the bald spot
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
     if contours:
-        best_contour = contours[0]
-        # Only draw if the area is meaningful
-        if cv2.contourArea(best_contour) > 500:
-            # Use convex hull to preserve a clean, natural bounding shape for the spot
-            hull = cv2.convexHull(best_contour)
+        center = np.array([w * 0.5, h * 0.44], dtype=np.float32)
+        best = None
+        best_score = -1e9
+        for c in contours:
+            area = float(cv2.contourArea(c))
+            if area < 280.0:
+                continue
+            m = cv2.moments(c)
+            if m["m00"] <= 0:
+                continue
+            ccx = m["m10"] / m["m00"]
+            ccy = m["m01"] / m["m00"]
+            dist = float(np.linalg.norm(np.array([ccx, ccy], dtype=np.float32) - center))
+            score = area - 1.6 * dist
+            if score > best_score:
+                best_score = score
+                best = c
+        if best is not None:
+            hull = cv2.convexHull(best)
             peri = cv2.arcLength(hull, True)
             approx = cv2.approxPolyDP(hull, 0.005 * peri, True)
-            
             cv2.polylines(
                 overlay_bgr,
                 [approx],
                 isClosed=True,
-                color=orange_bgr,
+                color=red_bgr,
                 thickness=line_thickness,
                 lineType=cv2.LINE_AA,
             )
@@ -745,8 +840,8 @@ def load_cnn_mask(image_bytes: bytes, model_path: Optional[str] = None) -> Optio
 def _split_bald_and_thin_from_prob(
     prob: np.ndarray,
     *,
-    t_thin: float = 0.26,
-    t_bald: float = 0.52,
+    t_thin: float = 0.18,
+    t_bald: float = 0.42,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Split CNN probability into bald (high p) vs thinning (mid p). Hair = low p.
@@ -912,14 +1007,6 @@ def _process_frontal_scalp_image(
                 lineType=cv2.LINE_AA,
             )
 
-        graft_est = int((graft_min + graft_max) / 2)
-        dot_count = max(8, min(120, graft_est // 45))
-        ys, xs = np.where(mask_scalp_fb == 255)
-        if len(xs) > 0 and dot_count > 0:
-            idx = np.random.choice(len(xs), size=min(dot_count, len(xs)), replace=False)
-            for x, y in zip(xs[idx], ys[idx]):
-                cv2.circle(overlay, (int(x), int(y)), radius=2, color=(0, 200, 255), thickness=-1)
-
         _, buf = cv2.imencode(".jpg", overlay)
         overlay_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
 
@@ -940,6 +1027,62 @@ def _process_frontal_scalp_image(
     }
 
 
+def _routing_prefer_frontal(img_bgr: np.ndarray) -> bool:
+    """
+    Orientation arbitration: avoid false top-view classification on frontal selfies.
+    Be strict before selecting frontal mode; otherwise top/crown photos can be
+    misrouted to temple/hairline overlays (which looks visually incorrect).
+    """
+    frontal_flag = _is_frontal_view(img_bgr)
+    vertex_flag = _is_likely_vertex_top_view(img_bgr)
+    frontal_score = _frontal_view_score(img_bgr)
+    vertex_score = _vertex_view_score(img_bgr)
+    face_gate = _has_frontal_face(img_bgr)
+    return bool(
+        face_gate
+        and frontal_flag
+        and not vertex_flag
+        and frontal_score >= (vertex_score + 0.12)
+        and frontal_score >= 0.32
+    )
+
+
+def predict_view_orientation(image_bytes: bytes) -> str:
+    """Returns 'front' or 'top' using the same routing rules as process_scalp_image."""
+    img = _preprocess(_bytes_to_image(image_bytes))
+    return "front" if _routing_prefer_frontal(img) else "top"
+
+
+def eval_vertex_segmentation_masks(
+    image_bytes: bytes,
+    use_cnn: bool = False,
+    cnn_model_path: Optional[str] = None,
+) -> Tuple[np.ndarray, np.ndarray, str]:
+    """
+    Run vertex/crown segmentation only (no frontal routing) for held-out evaluation
+    against top-view ground-truth masks.
+
+    Returns (bald_u8, thin_u8, segmentation_method).
+    """
+    img = _bytes_to_image(image_bytes)
+    img = _preprocess(img)
+    h, w = img.shape[:2]
+    head_roi = _head_roi_mask(h, w)
+    segmentation_method = "vertex_standard"
+    bald_u = np.zeros((h, w), dtype=np.uint8)
+    thin_u = np.zeros((h, w), dtype=np.uint8)
+    prob = None
+    if use_cnn and cnn_model_path:
+        prob = _cnn_raw_probability_map(image_bytes, cnn_model_path)
+    if prob is not None:
+        bald_u, thin_u = _split_bald_and_thin_from_prob(prob)
+        segmentation_method = "cnn_bald_thin"
+    else:
+        _, bald_u, thin_u = _bald_thin_masks_opencv_vertex(img, head_roi)
+        segmentation_method = "opencv_bald_thin"
+    return bald_u, thin_u, segmentation_method
+
+
 def process_scalp_image(
     image_bytes: bytes,
     use_cnn: bool = False,
@@ -956,17 +1099,7 @@ def process_scalp_image(
     total_pixels = h * w
     head_roi = _head_roi_mask(h, w)
 
-    # Orientation arbitration: avoid false top-view classification on frontal selfies.
-    frontal_flag = _is_frontal_view(img)
-    vertex_flag = _is_likely_vertex_top_view(img)
-    frontal_score = _frontal_view_score(img)
-    vertex_score = _vertex_view_score(img)
-    prefer_frontal = (
-        (frontal_flag and (not vertex_flag or frontal_score >= (vertex_score + 0.06)))
-        # Borderline fallback: if frontal evidence is moderate, prefer frontal for hairline photos.
-        or (frontal_score >= 0.26 and vertex_score <= 0.82)
-    )
-    if prefer_frontal:
+    if _routing_prefer_frontal(img):
         return _process_frontal_scalp_image(
             img, return_overlay_base64, h, w, image_bytes, use_cnn, cnn_model_path
         )
@@ -1010,21 +1143,6 @@ def process_scalp_image(
     if return_overlay_base64:
         overlay = img.copy()
         _draw_vertex_bald_thin_overlay(overlay, h, w, bald_u, thin_u)
-
-        graft_est = int((graft_min + graft_max) / 2)
-        dot_count = max(10, min(180, graft_est // 38))
-        keyhole = _vertex_keyhole_mask(h, w)
-        for label_mask, dot_color in ((thin_u, (120, 255, 200)), (bald_u, (0, 180, 255))):
-            dm = cv2.bitwise_and(label_mask, keyhole)
-            if cv2.countNonZero(dm) < 12:
-                continue
-            ys, xs = np.where(dm == 255)
-            if len(xs) == 0 or dot_count < 1:
-                continue
-            n = min(max(6, dot_count // 2), len(xs))
-            idx = np.random.choice(len(xs), size=n, replace=False)
-            for x, y in zip(xs[idx], ys[idx]):
-                cv2.circle(overlay, (int(x), int(y)), radius=2, color=dot_color, thickness=-1)
 
         _, buf = cv2.imencode(".jpg", overlay)
         overlay_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
@@ -1078,12 +1196,116 @@ def _estimate_reliability_percent(
     return int(np.clip(score, 18, 92))
 
 
+def _derive_damage_and_fall_risk_from_evidence(
+    image_bytes: bytes,
+    opencv_result: Dict[str, Any],
+    *,
+    bald_ratio: float,
+    graft_max: int,
+    contour_penalty: float,
+    graft_severity: float,
+    is_front: bool,
+) -> Tuple[float, float]:
+    """
+    Hair damage / fall risk as deterministic functions of segmentation, graft heuristics,
+    visible hair area, and texture (edge / Laplacian) from the same photo — not random.
+    """
+    feats = _extract_ml_features(_preprocess(_bytes_to_image(image_bytes)))
+    lap_var = float(feats[7])
+    edge_ratio = float(feats[8])
+    texture_stress = float(
+        np.clip(edge_ratio * 1.12 + min(lap_var / 2600.0, 1.0) * 0.34, 0.0, 1.0)
+    )
+
+    hair_cm = float(opencv_result.get("hair_area_cm2") or 0.0)
+    hair_vis = float(np.clip(hair_cm / 42.0, 0.0, 1.15))
+
+    thin_cm = float(opencv_result.get("thin_area_cm2") or 0.0)
+    bald_cm = float(opencv_result.get("bald_only_cm2") or 0.0)
+    if is_front:
+        thin_cm = 0.0
+        bald_cm = float(opencv_result.get("bald_area_cm2") or 0.0)
+
+    denom = thin_cm + bald_cm + 1e-6
+    thin_share = float(thin_cm / denom) if denom > 1e-5 else 0.0
+
+    hair_damage = (
+        14.0
+        + bald_ratio * 50.0
+        + thin_share * 26.0
+        + graft_severity * 16.0
+        + texture_stress * 14.0
+        - hair_vis * 20.0
+    )
+    hair_fall = (
+        12.0
+        + bald_ratio * 40.0
+        + thin_share * 36.0
+        + graft_severity * 14.0
+        + contour_penalty * 1.05
+        + (1.0 - hair_vis) * 24.0
+    )
+    if is_front:
+        hair_damage += bald_ratio * 8.0
+        hair_fall += bald_ratio * 10.0
+
+    return (
+        round(float(np.clip(hair_damage, 8.0, 98.0)), 1),
+        round(float(np.clip(hair_fall, 8.0, 98.0)), 1),
+    )
+
+
+def _normalize_profile_gender(raw: Optional[str]) -> Optional[str]:
+    """Account signup gender only (never inferred from the image). Returns male|female|other|None."""
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+    if s in {"male", "m", "man"}:
+        return "male"
+    if s in {"female", "f", "woman"}:
+        return "female"
+    if s in {"others", "other", "prefer not to say", "non-binary", "nonbinary"}:
+        return "other"
+    return None
+
+
+def _profile_gender_context_hint(pg: Optional[str], is_front: bool) -> Optional[str]:
+    """Non-diagnostic UX hint tied to declared account gender + view (not a clinical label)."""
+    if pg == "female":
+        if is_front:
+            return (
+                "Profile: Female (from your account). For fuller crown context, you can add a parted "
+                "top-of-head photo when convenient — scores here still use only this image."
+            )
+        return (
+            "Profile: Female (from your account). Long hair can cover the vertex; parting or lifting "
+            "hair at the crown often improves clarity for top-view photos next time."
+        )
+    if pg == "male":
+        if is_front:
+            return (
+                "Profile: Male (from your account). Pairing a frontal view with a top-down crown photo "
+                "(when possible) helps compare hairline vs vertex patterns."
+            )
+        return (
+            "Profile: Male (from your account). A straight-on hairline photo can complement this crown "
+            "view for overall pattern context."
+        )
+    if pg == "other":
+        return "Profile gender is set on your account for context only; scores are computed from this scalp image."
+    return None
+
+
 def analyze_scalp_with_opencv(
     image_bytes: bytes,
     use_cnn: bool = False,
     cnn_model_path: Optional[str] = None,
     use_trained_model: bool = False,
     trained_model_path: Optional[str] = None,
+    patient_profile_gender: Optional[str] = None,
+    patient_profile_age: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Run OpenCV-based bald detection + graft estimate, then merge with existing
@@ -1167,36 +1389,93 @@ def analyze_scalp_with_opencv(
     hair_density = round(float(np.clip(92 - bald_ratio * 65 - graft_severity * 8, 10, 100)), 1)
     moisture_level = round(float(np.clip(65 - bald_ratio * 20, 10, 100)), 1)
 
-    # Conditions & recommendations vary by severity.
+    hair_damage_level, hair_fall_risk = _derive_damage_and_fall_risk_from_evidence(
+        image_bytes,
+        opencv_result,
+        bald_ratio=float(bald_ratio),
+        graft_max=int(graft_max),
+        contour_penalty=contour_penalty,
+        graft_severity=graft_severity,
+        is_front=is_front,
+    )
+
+    # Conditions & recommendations vary by combined signals (ratio, graft range, cm2).
     conditions: List[str] = []
     recs: List[str] = []
+
+    bald_cm = float(opencv_result.get("bald_only_cm2") or 0.0)
+    thin_cm = float(opencv_result.get("thin_area_cm2") or 0.0)
+    if is_front:
+        affected_cm = max(bald_cm, float(opencv_result.get("bald_area_cm2") or 0.0) * 0.72) + 0.38 * thin_cm
+    else:
+        affected_cm = bald_cm + 0.42 * thin_cm
+
+    # 0=mild, 1=early, 2=moderate-advanced, 3=severe. Use cm2 heavily: graft math can be low on some crops
+    # while visible bald area is still large.
+    if bald_ratio >= 0.28 or graft_max >= 2400 or affected_cm >= 40.0:
+        scalp_tier = 3
+    elif bald_ratio >= 0.15 or graft_max >= 1200 or affected_cm >= 20.0:
+        scalp_tier = 2
+    elif bald_ratio >= 0.065 or graft_max >= 480 or affected_cm >= 5.0:
+        scalp_tier = 1
+    else:
+        scalp_tier = 0
 
     if is_front:
         conditions.append(
             "Frontal view: left/right temple recession zones detected and outlined organically (orange) based on AI analysis"
         )
 
-    if bald_ratio < 0.15 and graft_max < 800:
-        conditions.append("Generally healthy scalp with minimal visible thinning")
-        recs.extend([
-            "Maintain your current scalp care routine with a gentle, sulfate-free shampoo.",
-            "Use lightweight natural oils (coconut, argan) 1-2 times per week for shine and moisture.",
-            "Continue regular scalp massage for 3–5 minutes daily to support circulation.",
-        ])
-    elif bald_ratio < 0.35 or graft_max < 1600:
-        conditions.append("Early to moderate thinning observed in the frontal or crown area")
-        recs.extend([
-            "Introduce a hydrating scalp serum 2–3 times per week to reduce irritation and dryness.",
-            "Use a DHT-safe anti-hair fall shampoo and avoid very hot water when washing.",
-            "Discuss early medical options (topical minoxidil or peptides) with a hair specialist.",
-        ])
+    if scalp_tier == 0:
+        conditions.append("Generally healthy scalp with minimal visible thinning in the analyzed region")
+        recs.extend(
+            [
+                "Maintain a gentle, sulfate-free wash routine suited to your scalp type.",
+                "Use lightweight natural oils (coconut, argan) 1-2 times per week if lengths feel dry.",
+                "Continue 3-5 minute daily fingertip massage to support circulation (no diagnosis implied).",
+            ]
+        )
+    elif scalp_tier == 1:
+        conditions.append("Early thinning: increased scalp show-through versus dense hair in this photo")
+        recs.extend(
+            [
+                "Introduce a hydrating scalp serum 2-3 times per week to reduce dryness and tightness.",
+                "Use lukewarm water and a mild anti-hair-fall shampoo; avoid harsh daily surfactants.",
+                "Discuss topical minoxidil or peptide options with a dermatologist before starting.",
+                "Track shedding over 8-12 weeks with consistent lighting and angles for objective comparison.",
+            ]
+        )
+    elif scalp_tier == 2:
+        conditions.append("Moderate loss pattern: meaningful visible scalp area or graft estimate in this view")
+        recs.extend(
+            [
+                "Book a trichoscopy or in-person hair consult to map miniaturization versus true density loss.",
+                "Combine gentle cleansing with prescription-grade options (e.g. minoxidil) only under medical guidance.",
+                "Reduce chemical relaxers/bleach overlap; space color services at least 3-4 weeks apart when possible.",
+                "Add scalp SPF or a hat for outdoor UV when the crown is exposed.",
+                "Sleep stress and protein intake both influence shedding; aim for consistent sleep timing.",
+            ]
+        )
     else:
-        conditions.append("Significant bald area detected, suggesting advanced hair loss")
-        recs.extend([
-            "Schedule an in-person consultation to discuss graft planning and long-term restoration options.",
-            "Avoid tight hairstyles and harsh chemical treatments that can accelerate shedding.",
-            "Adopt a protein- and iron-rich diet (eggs, fish, leafy greens) and stay well hydrated.",
-        ])
+        conditions.append("Advanced hair loss: large bare or near-bare scalp region detected in this view")
+        conditions.append(
+            "Restoration context: indicative graft range suggests substantial crown or vertex deficit on this frame"
+        )
+        recs.extend(
+            [
+                "Schedule a surgical candidacy visit to discuss FUE/FUT zones, donor density, and long-term medical therapy.",
+                "Ask about combined medical management (e.g. clinician-directed minoxidil/finasteride) before any procedure.",
+                "Avoid tight ponytails, braids, or extensions that add traction on remaining hairs.",
+                "Protect exposed scalp from sunburn with SPF or breathable head cover during peak UV.",
+                "Support healing nutrition: adequate protein, iron-rich foods, and hydration; discuss labs if fatigue is present.",
+                "If rapid progression is new in months, rule out reversible causes (thyroid, iron, post-illness telogen effluvium) with a doctor.",
+            ]
+        )
+
+    if float(moisture_level) < 35.0:
+        recs.append(
+            "If dryness or flaking is noticeable, add a weekly fragrance-free scalp-hydration step (not a substitute for medical care)."
+        )
 
     # Always add at least one general recommendation.
     recs.append("Limit heat styling and always use a heat protectant spray when required.")
@@ -1222,35 +1501,62 @@ def analyze_scalp_with_opencv(
     )
     estimate_disclaimer = (
         "Numbers are estimates from this single photo (angle, zoom, lighting affect area and graft math). "
-        f"Heuristic model confidence ~{reliability}%. Not a diagnosis or treatment plan — confirm with a clinician."
+        f"Heuristic model confidence ~{reliability}%. "
+        "Reported accuracy is not a fixed percentage (e.g. 90-95%) without expert-labelled validation on diverse real-world photos. "
+        "Not a diagnosis or treatment plan - confirm with a clinician."
     )
     if not is_front and opencv_result.get("thin_area_cm2") is not None:
         analysis_summary = (
             f"Crown (top) view. Mode: {seg}. "
             f"Bald ~{opencv_result.get('bald_only_cm2', 0)} cm², thinning ~{opencv_result.get('thin_area_cm2', 0)} cm² "
             f"(graft-equivalent ~{opencv_result.get('bald_area_cm2', 0)} cm²). "
-            f"Grafts {graft_min}–{graft_max}. "
-            f"Scores — strength {hair_strength}%, density {hair_density}%."
+            f"Grafts {graft_min}-{graft_max}. "
+            f"Scores - strength {hair_strength}%, density {hair_density}%."
         )
     else:
         analysis_summary = (
             f"{'Hairline (front)' if is_front else 'Crown (top)'} view. "
             f"Mode: {seg}. "
             f"Bald area ~{opencv_result.get('bald_area_cm2', 0)} cm². "
-            f"Indicative graft range {graft_min}–{graft_max}. "
-            f"Scores — strength {hair_strength}%, density {hair_density}%."
+            f"Indicative graft range {graft_min}-{graft_max}. "
+            f"Scores - strength {hair_strength}%, density {hair_density}%."
         )
 
-    return {
+    pg = _normalize_profile_gender(patient_profile_gender)
+    if patient_profile_gender and str(patient_profile_gender).strip():
+        label = str(patient_profile_gender).strip()
+        analysis_summary = (
+            f"{analysis_summary} Account profile: {label} (from signup — not inferred from this photo)."
+        )
+    if patient_profile_age is not None and 1 <= int(patient_profile_age) < 120:
+        analysis_summary = f"{analysis_summary} Age on profile: {int(patient_profile_age)}."
+
+    recs_out = list(recs)
+    hint = _profile_gender_context_hint(pg, is_front)
+    if hint and hint not in recs_out:
+        recs_out.insert(0, hint)
+    recs_final = recs_out[:12]
+
+    out: Dict[str, Any] = {
         **opencv_result,
         "hair_strength": hair_strength,
         "scalp_health": scalp_health,
         "hair_density": hair_density,
         "moisture_level": moisture_level,
+        "hair_damage_level": hair_damage_level,
+        "hair_fall_risk": hair_fall_risk,
         "conditions": conditions,
-        "recommendations": recs[:5],
+        "recommendations": recs_final,
         "hair_count_note": note,
         "analysis_summary": analysis_summary,
         "estimate_reliability_percent": reliability,
         "estimate_disclaimer": estimate_disclaimer,
     }
+    if patient_profile_gender and str(patient_profile_gender).strip():
+        out["patient_profile_gender"] = str(patient_profile_gender).strip()
+    if pg:
+        out["patient_profile_gender_normalized"] = pg
+    if patient_profile_age is not None and 1 <= int(patient_profile_age) < 120:
+        out["patient_profile_age"] = int(patient_profile_age)
+    out["patient_profile_source"] = "user_account_signup"
+    return out

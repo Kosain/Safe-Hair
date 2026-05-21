@@ -9,6 +9,9 @@ class AuthProvider extends ChangeNotifier {
   String? _userPhotoUrl;
   Uint8List? _userPhotoBytes;
   String _role = 'patient';
+  /// Set when [setRole] runs (role screen, login/signup). Used so a patient login is not
+  /// overwritten when the same uid also has a completed doctor profile in Firestore.
+  bool _roleChosenThisSession = false;
   bool _profileChecked = false;
   bool _isDoctorRegistered = false;
   bool _isPatientRegistered = false;
@@ -82,7 +85,8 @@ class AuthProvider extends ChangeNotifier {
   }
 
   void setRole(String role) {
-    _role = role;
+    _role = _normalizeRole(role);
+    _roleChosenThisSession = true;
     notifyListeners();
   }
 
@@ -134,11 +138,21 @@ class AuthProvider extends ChangeNotifier {
       }
     }
 
-    // If they are registered as one role, auto-select it.
-    if (_isDoctorRegistered) {
+    // Unambiguous: only one profile type → use it.
+    if (_isDoctorRegistered && !_isPatientRegistered) {
       _role = 'doctor';
-    } else if (_isPatientRegistered) {
+    } else if (_isPatientRegistered && !_isDoctorRegistered) {
       _role = 'patient';
+    } else if (_isDoctorRegistered && _isPatientRegistered) {
+      // Same uid has both: honor explicit role from UI this session; otherwise legacy default = doctor
+      // so cold app start still opens provider dashboards (Dr accounts).
+      if (_roleChosenThisSession) {
+        _role = _normalizeRole(_role);
+      } else {
+        _role = 'doctor';
+      }
+    } else {
+      _role = _normalizeRole(_role);
     }
 
     _lastRegistrationCheckUid = uid;
@@ -212,6 +226,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<bool> signInWithGoogle() async {
+    _lastAuthError = null;
     if (FirebaseService.isInitialized) {
       final cred = await FirebaseService.signInWithGoogle();
       if (cred != null && cred.user != null) {
@@ -227,10 +242,12 @@ class AuthProvider extends ChangeNotifier {
         return true;
       }
     }
+    _lastAuthError = FirebaseService.lastAuthError;
     return false;
   }
 
   Future<bool> signInWithFacebook() async {
+    _lastAuthError = null;
     if (FirebaseService.isInitialized) {
       final cred = await FirebaseService.signInWithFacebook();
       if (cred != null && cred.user != null) {
@@ -246,6 +263,7 @@ class AuthProvider extends ChangeNotifier {
         return true;
       }
     }
+    _lastAuthError = FirebaseService.lastAuthError;
     return false;
   }
 
@@ -253,6 +271,7 @@ class AuthProvider extends ChangeNotifier {
     if (FirebaseService.isInitialized) await FirebaseService.signOut();
     ApiService().clearSession();
     _lastRegistrationCheckUid = null;
+    _roleChosenThisSession = false;
     _userId = null;
     _userEmail = null;
     _userName = null;

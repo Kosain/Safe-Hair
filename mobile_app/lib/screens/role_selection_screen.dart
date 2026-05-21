@@ -5,6 +5,7 @@ import '../core/app_colors.dart';
 import '../core/responsive.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/animated_primary_button.dart';
+import '../widgets/firebase_init_banner.dart';
 
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key});
@@ -69,6 +70,8 @@ class RoleSelectionScreen extends StatelessWidget {
                     constraints: BoxConstraints(maxWidth: cardMaxW),
                     child: Column(
                       children: [
+                        const FirebaseInitBanner(),
+                        const SizedBox(height: 12),
                         Container(
                           padding: const EdgeInsets.fromLTRB(28, 36, 28, 32),
                           decoration: BoxDecoration(

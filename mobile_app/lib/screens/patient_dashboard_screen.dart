@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
+import '../utils/dashboard_appointment_reminder.dart';
 import '../widgets/patient_web_scaffold.dart';
 
 DateTime? _hairScanDateFromFirestore(dynamic v) {
@@ -23,6 +24,31 @@ int _compareHairScanCreated(dynamic a, dynamic b) {
   if (da == null) return -1;
   if (db == null) return 1;
   return da.compareTo(db);
+}
+
+List<QueryDocumentSnapshot<Map<String, dynamic>>> _unreadAppointmentInbox(
+  Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+) {
+  final out = docs.where((d) {
+    final m = d.data();
+    if (m['read'] == true) return false;
+    final t = (m['type'] ?? 'appointment').toString();
+    return t == 'appointment';
+  }).toList();
+  DateTime? ts(Map<String, dynamic> m) {
+    final c = m['createdAt'];
+    if (c is Timestamp) return c.toDate();
+    if (c is String) return DateTime.tryParse(c);
+    return null;
+  }
+
+  out.sort((a, b) {
+    final ta = ts(a.data());
+    final tb = ts(b.data());
+    if (ta != null && tb != null) return tb.compareTo(ta);
+    return b.id.compareTo(a.id);
+  });
+  return out;
 }
 
 class PatientDashboardScreen extends StatefulWidget {
@@ -62,54 +88,81 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: FirebaseService.hairScansStream(uid),
             builder: (context, scansSnap) {
-              final data = detailSnap.data?.data();
-              final strength = (data?['hairStrengthPct'] as num?)?.round();
-              final scalp = (data?['hairScalpHealthPct'] as num?)?.round();
-              final damage = (data?['hairDamageLevelPct'] as num?)?.round();
-              final fall = (data?['hairFallRiskPct'] as num?)?.round();
-              final hasData = strength != null && scalp != null && damage != null && fall != null;
-              final lastAt = _hairScanDateFromFirestore(data?['hairLastScanAt']);
-              final lastLine = lastAt != null
-                  ? 'Last scan: ${DateFormat('d MMM y').format(lastAt)}'
-                  : 'Last scan: None';
+              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: FirebaseService.getAppointments(uid),
+                builder: (context, apptSnap) {
+                  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: FirebaseService.patientNotificationsStream(uid),
+                    builder: (context, inboxSnap) {
+                  final data = detailSnap.data?.data();
+                  final strength = (data?['hairStrengthPct'] as num?)?.round();
+                  final scalp = (data?['hairScalpHealthPct'] as num?)?.round();
+                  final damage = (data?['hairDamageLevelPct'] as num?)?.round();
+                  final fall = (data?['hairFallRiskPct'] as num?)?.round();
+                  final hasData = strength != null && scalp != null && damage != null && fall != null;
+                  final lastAt = _hairScanDateFromFirestore(data?['hairLastScanAt']);
+                  final lastLine = lastAt != null
+                      ? 'Last scan: ${DateFormat('d MMM y').format(lastAt)}'
+                      : 'Last scan: None';
 
-              final rawDocs = scansSnap.data?.docs ?? [];
-              final sorted = [...rawDocs]..sort(
-                  (a, b) => _compareHairScanCreated(
-                    a.data()['createdAt'],
-                    b.data()['createdAt'],
-                  ),
-                );
-
-              return Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1200),
-                  child: Column(
-                    children: [
-                      _MetricsCard(
-                        lastScanLine: lastLine,
-                        hasMetrics: hasData,
-                        strength: strength,
-                        scalp: scalp,
-                        damage: damage,
-                        fall: fall,
+                  final rawDocs = scansSnap.data?.docs ?? [];
+                  final sorted = [...rawDocs]..sort(
+                      (a, b) => _compareHairScanCreated(
+                        a.data()['createdAt'],
+                        b.data()['createdAt'],
                       ),
-                      const SizedBox(height: 16),
-                      const IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(child: _ReminderCard()),
-                            SizedBox(width: 14),
-                            Expanded(child: _RoutineCard()),
+                    );
+
+                  final apptLoading = apptSnap.connectionState == ConnectionState.waiting;
+                  final reminder = nextUpcomingAppointmentSummary(apptSnap.data?.docs ?? const []);
+                  final routineTip = data?['hairLatestRoutineTip']?.toString();
+                  final inboxUnread = _unreadAppointmentInbox(inboxSnap.data?.docs ?? const []);
+
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1200),
+                      child: Column(
+                        children: [
+                          if (inboxUnread.isNotEmpty) ...[
+                            _PatientAppointmentInboxBanner(items: inboxUnread),
+                            const SizedBox(height: 12),
                           ],
-                        ),
+                          _MetricsCard(
+                            lastScanLine: lastLine,
+                            hasMetrics: hasData,
+                            strength: strength,
+                            scalp: scalp,
+                            damage: damage,
+                            fall: fall,
+                          ),
+                          const SizedBox(height: 16),
+                          IntrinsicHeight(
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                  child: _ReminderCard(
+                                    reminder: reminder,
+                                    appointmentsLoading: apptLoading,
+                                    firebaseReady: true,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: _RoutineCard(latestTip: routineTip),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _ChartCard(scanDocs: sorted),
+                        ],
                       ),
-                      const SizedBox(height: 16),
-                      _ChartCard(scanDocs: sorted),
-                    ],
-                  ),
-                ),
+                    ),
+                  );
+                    },
+                  );
+                },
               );
             },
           );
@@ -130,13 +183,19 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
                 fall: null,
               ),
               const SizedBox(height: 16),
-              const IntrinsicHeight(
+              IntrinsicHeight(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(child: _ReminderCard()),
-                    SizedBox(width: 14),
-                    Expanded(child: _RoutineCard()),
+                    const Expanded(
+                      child: _ReminderCard(
+                        reminder: null,
+                        appointmentsLoading: false,
+                        firebaseReady: false,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    const Expanded(child: _RoutineCard(latestTip: null)),
                   ],
                 ),
               ),
@@ -286,10 +345,34 @@ class _MetricTile extends StatelessWidget {
 }
 
 class _ReminderCard extends StatelessWidget {
-  const _ReminderCard();
+  const _ReminderCard({
+    this.reminder,
+    this.appointmentsLoading = false,
+    this.firebaseReady = true,
+  });
+
+  final AppointmentReminderLines? reminder;
+  final bool appointmentsLoading;
+  final bool firebaseReady;
 
   @override
   Widget build(BuildContext context) {
+    final String line1;
+    final String line2;
+    if (!firebaseReady) {
+      line1 = 'Sign in to load data';
+      line2 = 'Your appointment reminders appear here after you sign in.';
+    } else if (appointmentsLoading) {
+      line1 = 'Loading…';
+      line2 = 'Fetching your bookings.';
+    } else if (reminder != null) {
+      line1 = reminder!.whenLine;
+      line2 = reminder!.detailLine;
+    } else {
+      line1 = 'No upcoming appointment';
+      line2 = 'Book a consultation from My Appointments.';
+    }
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -308,9 +391,7 @@ class _ReminderCard extends StatelessWidget {
               InkWell(
                 borderRadius: BorderRadius.circular(22),
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Add reminder coming soon')),
-                  );
+                  if (firebaseReady) context.push('/my-appointments');
                 },
                 child: Container(
                   width: 34,
@@ -329,9 +410,9 @@ class _ReminderCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          const Text('Today 10 AM', style: TextStyle(fontSize: 16)),
+          Text(line1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          const Text('Apply Hair Organic Oil', style: TextStyle(color: Color(0xFF5F5F5F))),
+          Text(line2, style: const TextStyle(color: Color(0xFF5F5F5F), height: 1.25)),
         ],
       ),
     );
@@ -339,10 +420,17 @@ class _ReminderCard extends StatelessWidget {
 }
 
 class _RoutineCard extends StatelessWidget {
-  const _RoutineCard();
+  const _RoutineCard({this.latestTip});
+
+  final String? latestTip;
 
   @override
   Widget build(BuildContext context) {
+    final tip = latestTip?.trim();
+    final body = (tip != null && tip.isNotEmpty)
+        ? tip
+        : 'Run a scalp analysis from My Scans to save your latest AI care recommendation here.';
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -360,11 +448,7 @@ class _RoutineCard extends StatelessWidget {
             children: [
               InkWell(
                 borderRadius: BorderRadius.circular(22),
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('AI analysis coming soon')),
-                  );
-                },
+                onTap: () => context.push('/my-scans'),
                 child: Container(
                   width: 34,
                   height: 34,
@@ -382,9 +466,9 @@ class _RoutineCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          const Text(
-            'AI will analyse your hair and make an auto daily routine',
-            style: TextStyle(height: 1.25, color: Color(0xFF1E1E1E), fontWeight: FontWeight.w600),
+          Text(
+            body,
+            style: const TextStyle(height: 1.25, color: Color(0xFF1E1E1E), fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -557,6 +641,67 @@ class _ChartCard extends StatelessWidget {
           const Text('Hair Strength Over Time', style: TextStyle(fontSize: 12, color: Color(0xFF626262))),
         ],
       ),
+    );
+  }
+}
+
+class _PatientAppointmentInboxBanner extends StatelessWidget {
+  const _PatientAppointmentInboxBanner({required this.items});
+
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Appointment updates',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.black87),
+        ),
+        const SizedBox(height: 8),
+        ...items.take(4).map((d) {
+          final m = d.data();
+          final title = (m['title'] ?? 'Update').toString();
+          final body = (m['body'] ?? '').toString();
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Material(
+              color: const Color(0xFFE8F5E9),
+              borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.notifications_active_outlined, color: Color(0xFF2E7D32), size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                          if (body.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(body, style: const TextStyle(fontSize: 13, height: 1.35)),
+                            ),
+                        ],
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        await FirebaseService.markPatientNotificationRead(d.id);
+                      },
+                      child: const Text('Dismiss'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 }

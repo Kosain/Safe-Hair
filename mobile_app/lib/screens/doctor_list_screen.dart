@@ -1,10 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/app_colors.dart';
-import '../core/doctors_data.dart';
 import '../core/nav_helper.dart';
 import '../services/api_service.dart';
 import '../services/firebase_service.dart';
@@ -42,41 +40,6 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
     }
   }
 
-  void _showAnalysisRequiredDialog() {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('AI Scalp Analysis Required'),
-        content: const Text(
-          'Before booking a consultation, please complete AI scalp analysis first.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Later'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              context.push('/scalp-analyzer');
-            },
-            child: const Text('Start Analysis'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _bookSelectedDoctor() {
-    final idx = _selectedIndex;
-    if (_doctors.isEmpty || idx == null) return;
-    final d = _doctors[idx] as Map<String, dynamic>;
-    final name = (d['fullName'] ?? d['ownerName'] ?? d['displayName'] ?? d['name'] ?? 'Dr. Unknown').toString();
-    final clinicName = (d['clinicName'] ?? d['clinic_name'] ?? d['displayName'] ?? d['name'] ?? 'Clinic').toString();
-    final doctorId = d['id']?.toString() ?? d['userId']?.toString() ?? d['user_id']?.toString() ?? '';
-    context.push('/appointment', extra: {'doctorId': doctorId, 'doctorName': name, 'clinicName': clinicName});
-  }
-
   void _onDoctorTap(int index) {
     setState(() {
       if (_selectedIndex == index) {
@@ -95,12 +58,11 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
         latestAnalysis = await FirebaseService.getLatestScalpAnalysisOnce(userId);
       }
       if (FirebaseService.isInitialized) {
-        final list = await FirebaseService.getVerifiedDoctorsOnce();
+        final list = await FirebaseService.getDoctorsForPatientBookingOnce();
         if (mounted) {
-          final rows = list.isEmpty ? DoctorsData.defaultDoctors : list;
           setState(() {
-            _doctors = rows;
-            _recommendedIndex = _findBestClinicIndex(rows, latestAnalysis);
+            _doctors = list;
+            _recommendedIndex = _findBestClinicIndex(list, latestAnalysis);
             _selectedIndex = null;
             _loading = false;
           });
@@ -111,7 +73,14 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
           onTimeout: () => <dynamic>[],
         );
         if (mounted) {
-          final rows = list.isEmpty ? DoctorsData.defaultDoctors : list;
+          final rows = <Map<String, dynamic>>[];
+          for (final e in list) {
+            if (e is Map<String, dynamic>) {
+              rows.add(e);
+            } else if (e is Map) {
+              rows.add(Map<String, dynamic>.from(e));
+            }
+          }
           setState(() {
             _doctors = rows;
             _recommendedIndex = _findBestClinicIndex(rows, latestAnalysis);
@@ -121,10 +90,12 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
         }
       }
     } catch (_) {
-      if (mounted) setState(() {
-        _doctors = DoctorsData.defaultDoctors;
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _doctors = [];
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -145,7 +116,20 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView.builder(
+          : _doctors.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'No doctors available to book.\n\n'
+                      'Make sure doctor profiles exist in Firebase (Firestore → doctors) and try again. '
+                      'Doctors with completed registration appear first.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.textDark, fontSize: 15, height: 1.4),
+                    ),
+                  ),
+                )
+              : ListView.builder(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 130),
                   itemCount: _doctors.length,
                   itemBuilder: (_, i) {
@@ -160,7 +144,7 @@ class _DoctorListScreenState extends State<DoctorListScreen> {
                             .join(', ')
                         : (d['specialization'] ?? d['specialization_name'] ?? '').toString();
                     final rating = (d['rating'] ?? 0).toString();
-                    final feeRaw = d['consultation_fee'] ?? 0;
+                    final feeRaw = d['consultation_fee'] ?? d['consultationFee'] ?? 0;
                     final teamFeeRaw = d['activeDoctorsData'] is List && (d['activeDoctorsData'] as List).isNotEmpty
                         ? (((d['activeDoctorsData'] as List).first is Map) ? ((d['activeDoctorsData'] as List).first as Map)['fee'] : null)
                         : null;
@@ -374,14 +358,6 @@ class _DoctorCard extends StatelessWidget {
   }
 }
 
-String _doctorLabel(dynamic row) {
-  if (row is! Map) return 'selected doctor';
-  final map = Map<String, dynamic>.from(row as Map);
-  final name = (map['fullName'] ?? map['ownerName'] ?? map['displayName'] ?? map['name'] ?? 'Doctor').toString().trim();
-  if (name.isNotEmpty) return name;
-  return 'selected doctor';
-}
-
 int _asInt(dynamic value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
@@ -405,7 +381,7 @@ int _findBestClinicIndex(List<dynamic> doctors, Map<String, dynamic>? analysis) 
 
   for (int i = 0; i < doctors.length; i++) {
     final d = doctors[i] is Map<String, dynamic> ? doctors[i] as Map<String, dynamic> : <String, dynamic>{};
-    final fee = _asInt(d['consultation_fee']);
+    final fee = _asInt(d['consultationFee'] ?? d['consultation_fee']);
     final rating = _asDouble(d['rating']);
     final activeDoctors = _asInt(d['activeDoctorsCount']);
     final expYears = _asInt(d['experienceYears']);

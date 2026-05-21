@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -62,6 +61,15 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
         ),
         title: Text('Patient Details', style: TextStyle(color: AppColors.textDark, fontWeight: FontWeight.bold)),
         centerTitle: true,
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await context.read<AuthProvider>().signOut();
+              if (context.mounted) context.go('/role');
+            },
+            child: Text('Sign out', style: TextStyle(color: AppColors.textDark, fontWeight: FontWeight.w600)),
+          ),
+        ],
       ),
       body: Center(
         child: ConstrainedBox(
@@ -439,17 +447,11 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
         } catch (_) {}
       }
 
-      // Firestore document limit is 1 MiB; skip huge base64 payloads so saves don't hang/fail.
-      final bytes = _profileImageBytes;
-      final String? profileB64 =
-          (bytes != null && bytes.length <= 400000) ? base64Encode(bytes) : null;
-
+      // Never embed photos as base64 in Firestore (1 MiB limit + rules noise); use Storage URL only.
       final data = {
         'userId': authUid,
         'user_id': authUid,
         'profileImageUrl': _profileImageUrl,
-        // Storage unavailable on Spark projects in some regions: keep a Firestore fallback image.
-        'profileImageBase64': profileB64,
         'name': _name,
         // Keep both DOB and legacy age_* keys for backward compatibility.
         'dob_day': _day,

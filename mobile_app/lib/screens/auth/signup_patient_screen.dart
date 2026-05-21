@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/validators.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/firebase_service.dart';
 import '../../widgets/animated_primary_button.dart';
+import '../../widgets/firebase_init_banner.dart';
 import '../../widgets/safe_hair_auth_shell.dart';
 
 class SignupPatientScreen extends StatefulWidget {
@@ -41,6 +43,8 @@ class _SignupPatientScreenState extends State<SignupPatientScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const FirebaseInitBanner(),
+          const SizedBox(height: 12),
           Row(
             children: [
               AuthSocialButton(
@@ -244,7 +248,9 @@ class _SignupPatientScreenState extends State<SignupPatientScreen> {
           if (mounted) context.go('/patient-details');
         });
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Google sign-up failed. Enable in Firebase Console.')));
+        final msg = FirebaseService.lastAuthError ??
+            'Google sign-up failed. Enable Google sign-in in Firebase Console and add your domain under Authentication → Settings → Authorized domains.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     }
   }
@@ -259,7 +265,9 @@ class _SignupPatientScreenState extends State<SignupPatientScreen> {
           if (mounted) context.go('/patient-details');
         });
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Facebook sign-up failed. Enable in Firebase Console.')));
+        final msg = FirebaseService.lastAuthError ??
+            'Facebook sign-up failed. Enable the Facebook provider in Firebase Console.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     }
   }

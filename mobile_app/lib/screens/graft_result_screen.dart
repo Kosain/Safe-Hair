@@ -188,7 +188,7 @@ class GraftResultScreen extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: () => context.push('/appointment'),
+                onPressed: () => context.go('/my-appointments'),
                 child: const Text('Book an appointment'),
               ),
             ),

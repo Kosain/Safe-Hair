@@ -10,12 +10,25 @@ service cloud.firestore {
     match /appointments/{docId} {
       allow read, write: if request.auth != null;
     }
+    // Doctor-created alerts for patients (accept/decline). Patient may read/update own rows.
+    match /patient_notifications/{docId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
     match /patient_details/{docId} {
       allow read: if request.auth != null
           && (request.auth.uid == docId
               || (resource != null && resource.data.userId == request.auth.uid));
       allow create, update: if request.auth != null && request.auth.uid == docId;
       allow delete: if request.auth != null && request.auth.uid == docId;
+
+      match /hair_scans/{scanId} {
+        allow read, write: if request.auth != null && request.auth.uid == docId;
+      }
+      match /reports/{reportId} {
+        allow read, write: if request.auth != null && request.auth.uid == docId;
+      }
     }
     match /doctors/{docId} {
       allow read, write: if request.auth != null;

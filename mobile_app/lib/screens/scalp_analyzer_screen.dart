@@ -32,6 +32,18 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
   bool _loading = false;
   ScalpAnalysisModel? _analysisResult;
 
+  double _numOrThrow(Map<String, dynamic> m, List<String> keys) {
+    for (final k in keys) {
+      final v = m[k];
+      if (v is num) return v.toDouble();
+      if (v is String) {
+        final p = double.tryParse(v);
+        if (p != null) return p;
+      }
+    }
+    throw Exception('Missing AI metric: ${keys.first}');
+  }
+
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final xFile = await picker.pickImage(source: source, maxWidth: 800);
@@ -56,11 +68,40 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
     setState(() => _loading = true);
 
     try {
-      final userId = context.read<AuthProvider>().userId ?? 'unknown';
+      final auth = context.read<AuthProvider>();
+      final signedInUid = auth.userId;
+      final patientDisplayName = (auth.userName ?? 'Patient').trim();
+      final userId = signedInUid ?? 'unknown';
+
+      String? profileGender;
+      int? profileAge;
+      if (FirebaseService.isInitialized && signedInUid != null && signedInUid.isNotEmpty) {
+        final prof = await FirebaseService.getPatientDetails(signedInUid);
+        final d = prof?.data();
+        final gx = (d?['gender']?.toString() ?? '').trim();
+        if (gx.isNotEmpty) profileGender = gx;
+        final n = DateTime.now();
+        final dd = (d?['dob_day'] as num?)?.toInt();
+        final mm = (d?['dob_month'] as num?)?.toInt();
+        final yy = (d?['dob_year'] as num?)?.toInt();
+        if (dd != null && mm != null && yy != null) {
+          try {
+            final dob = DateTime(yy, mm, dd);
+            var a = n.year - dob.year;
+            if (n.month < dob.month || (n.month == dob.month && n.day < dob.day)) a--;
+            if (a > 0 && a < 120) profileAge = a;
+          } catch (_) {}
+        }
+      }
 
       // Call AI analysis API (with timeout in ApiService).
       // Do not use local fake fallback; fail clearly if backend AI is unavailable.
-      final apiResult = await ApiService().analyzeScalpImage(_imageBytes!, userId: userId);
+      final apiResult = await ApiService().analyzeScalpImage(
+        _imageBytes!,
+        userId: userId,
+        patientGender: profileGender,
+        patientAge: profileAge,
+      );
       if (apiResult == null) {
         throw Exception('AI API returned empty response');
       }
@@ -71,10 +112,10 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
       final analysis = ScalpAnalysisModel(
         id: '',
         userId: userId,
-        hairStrength: (apiResult['hair_strength'] ?? 72).toDouble(),
-        scalpHealth: (apiResult['scalp_health'] ?? 60).toDouble(),
-        hairDensity: (apiResult['hair_density'] ?? 68).toDouble(),
-        moistureLevel: (apiResult['moisture_level'] ?? 55).toDouble(),
+        hairStrength: _numOrThrow(apiResult, const ['hair_strength', 'hairStrength']),
+        scalpHealth: _numOrThrow(apiResult, const ['scalp_health', 'scalpHealth']),
+        hairDensity: _numOrThrow(apiResult, const ['hair_density', 'hairDensity']),
+        moistureLevel: _numOrThrow(apiResult, const ['moisture_level', 'moistureLevel']),
         conditions: List<String>.from(apiResult['conditions'] ?? []),
         recommendations: List<String>.from(apiResult['recommendations'] ?? []),
         createdAt: DateTime.now(),
@@ -144,7 +185,11 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
             'title': 'Scalp Analysis Report',
             'date': DateTime.now().toIso8601String(),
             'createdAt': DateTime.now().toIso8601String(),
+            // Keep top-level fields for existing report readers.
             'overlay_image_base64': analysis.overlayImageBase64,
+            'overlayImageBase64': analysis.overlayImageBase64,
+            'scalpImageBase64': base64Encode(_imageBytes!),
+            'imageBase64': base64Encode(_imageBytes!),
             'summary': {
               'hairStrength': analysis.hairStrength,
               'scalpHealth': analysis.scalpHealth,
@@ -160,10 +205,101 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
               'estimatedHairCountMax': analysis.estimatedHairCountMax,
               'estimatedHairCount': analysis.estimatedHairCount,
               'segmentationMethod': analysis.segmentationMethod,
+              'overlay_image_base64': analysis.overlayImageBase64,
+              'overlayImageBase64': analysis.overlayImageBase64,
             },
             'recommendations': analysis.recommendations,
           }).timeout(const Duration(seconds: 10));
         } catch (_) {}
+
+        // Dashboard reads `patient_details` + `hair_scans` (same as My Scans). Analyzer used to
+        // only write `scalp_analyses` / root `reports`, so metrics never refreshed after Analyze here.
+        if (signedInUid != null && signedInUid.isNotEmpty) {
+          try {
+            final strength = analysis.hairStrength.round().clamp(0, 100);
+            final scalp = analysis.scalpHealth.round().clamp(0, 100);
+            final damage = ((apiResult['hair_damage_level'] ?? apiResult['hairDamageLevel']) as num?)
+                    ?.round()
+                    .clamp(0, 100) ??
+                (100 - analysis.hairDensity).round().clamp(0, 100);
+            final fall = ((apiResult['hair_fall_risk'] ?? apiResult['hairFallRisk']) as num?)
+                    ?.round()
+                    .clamp(0, 100) ??
+                (100 - analysis.scalpHealth).round().clamp(0, 100);
+            final avg = FirebaseService.hairHealthAverageScore(strength, scalp, damage, fall).round();
+
+            final originalB64 = base64Encode(_imageBytes!);
+            var overlayRaw = analysis.overlayImageBase64?.trim();
+            if (overlayRaw != null && overlayRaw.startsWith('data:')) {
+              final comma = overlayRaw.indexOf(',');
+              if (comma >= 0) overlayRaw = overlayRaw.substring(comma + 1);
+            }
+            overlayRaw = overlayRaw?.replaceAll('\n', '').replaceAll('\r', '');
+            final analyzedB64 =
+                (overlayRaw != null && overlayRaw.isNotEmpty) ? overlayRaw : originalB64;
+
+            final reportId = FirebaseService.firestore
+                .collection('patient_details')
+                .doc(signedInUid)
+                .collection('reports')
+                .doc()
+                .id;
+
+            final synced = await FirebaseService.saveHairAnalysisSession(
+              userId: signedInUid,
+              strength: strength,
+              scalp: scalp,
+              damage: damage,
+              fall: fall,
+              reportDocId: reportId,
+              reportPayload: {
+                'analyzedImageBase64': analyzedB64,
+                'scalpImageBase64': analyzedB64,
+                'imageBase64': analyzedB64,
+                if (overlayRaw != null && overlayRaw.isNotEmpty) 'overlayImageBase64': overlayRaw,
+                if (overlayRaw != null && overlayRaw.isNotEmpty) 'overlay_image_base64': overlayRaw,
+                'patientDisplayName': patientDisplayName.isNotEmpty ? patientDisplayName : 'Patient',
+                'overallScore': avg,
+                'issues': const <Map<String, dynamic>>[],
+                'recommendations': analysis.recommendations,
+                'graftEstimateText': (analysis.graftMin != null && analysis.graftMax != null)
+                    ? '${analysis.graftMin} - ${analysis.graftMax}'
+                    : 'Not available',
+                'summary': {
+                  'hairStrength': strength,
+                  'scalpHealth': scalp,
+                  'hairDensity': analysis.hairDensity.round(),
+                  'moistureLevel': analysis.moistureLevel.round(),
+                  'hairDamageLevel': damage,
+                  'hairFallRisk': fall,
+                  'conditions': analysis.conditions,
+                  'recommendations': analysis.recommendations,
+                  'graftMin': analysis.graftMin,
+                  'graftMax': analysis.graftMax,
+                  'viewOrientation': analysis.viewOrientation,
+                  'estimateReliabilityPercent': analysis.estimateReliabilityPercent,
+                  if (overlayRaw != null && overlayRaw.isNotEmpty) 'overlayImageBase64': overlayRaw,
+                },
+              },
+            );
+            if (!synced && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Analysis completed, but dashboard metrics could not be saved. Check Firestore rules and try Analyze from My Scans.',
+                  ),
+                ),
+              );
+            }
+          } catch (e, st) {
+            debugPrint('saveHairAnalysisSession from scalp analyzer: $e\n$st');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Dashboard sync failed: $e')),
+              );
+            }
+          }
+        }
       }
 
       if (mounted) {

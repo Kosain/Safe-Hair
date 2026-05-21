@@ -88,6 +88,8 @@ app.add_middleware(
 
 class ScalpAnalysisRequest(BaseModel):
     image_base64: Optional[str] = None
+    patient_gender: Optional[str] = None
+    patient_age: Optional[int] = None
 
 
 class ScalpAnalysisResult(BaseModel):
@@ -433,6 +435,8 @@ def ai_scalp_analyze(request: ScalpAnalysisRequest):
                 cnn_model_path=_CNN_MODEL_PATH,
                 use_trained_model=_HAS_TRAINED_MODEL,
                 trained_model_path=_TRAINED_MODEL_PATH,
+                patient_profile_gender=request.patient_gender,
+                patient_profile_age=request.patient_age,
             )
             if _has_opencv
             else _analyze_scalp_fallback(image_bytes)
@@ -565,6 +569,8 @@ def v1_users_me_update(
 async def v1_reports_upload(
     file: UploadFile = File(...),
     user_id: Optional[str] = Query(default=None),
+    patient_gender: Optional[str] = Query(default=None),
+    patient_age: Optional[int] = Query(default=None),
 ):
     image_bytes = await file.read()
     block = _strict_ai_blocks()
@@ -577,6 +583,8 @@ async def v1_reports_upload(
             cnn_model_path=_CNN_MODEL_PATH,
             use_trained_model=_HAS_TRAINED_MODEL,
             trained_model_path=_TRAINED_MODEL_PATH,
+            patient_profile_gender=patient_gender,
+            patient_profile_age=patient_age,
         )
         if _has_opencv
         else _analyze_scalp_fallback(image_bytes)

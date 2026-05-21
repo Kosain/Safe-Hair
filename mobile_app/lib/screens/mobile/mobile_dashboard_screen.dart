@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/firebase_service.dart';
+import '../../utils/dashboard_appointment_reminder.dart';
 
 DateTime? _mobileHairScanDate(dynamic v) {
   if (v is Timestamp) return v.toDate();
@@ -254,45 +255,56 @@ class _MobileDashboardContent extends StatelessWidget {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: FirebaseService.hairScansStream(userId!),
             builder: (context, scansSnap) {
-              final data = detailSnap.data?.data();
-              final strength = (data?['hairStrengthPct'] as num?)?.round();
-              final scalp = (data?['hairScalpHealthPct'] as num?)?.round();
-              final damage = (data?['hairDamageLevelPct'] as num?)?.round();
-              final fall = (data?['hairFallRiskPct'] as num?)?.round();
-              final hasData = strength != null && scalp != null && damage != null && fall != null;
-              final lastAt = _mobileHairScanDate(data?['hairLastScanAt']);
-              final lastLine = lastAt != null
-                  ? 'Last scan: ${DateFormat('d MMM y').format(lastAt)}'
-                  : 'Last scan: None';
+              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: FirebaseService.getAppointments(userId!),
+                builder: (context, apptSnap) {
+                  final data = detailSnap.data?.data();
+                  final strength = (data?['hairStrengthPct'] as num?)?.round();
+                  final scalp = (data?['hairScalpHealthPct'] as num?)?.round();
+                  final damage = (data?['hairDamageLevelPct'] as num?)?.round();
+                  final fall = (data?['hairFallRiskPct'] as num?)?.round();
+                  final hasData = strength != null && scalp != null && damage != null && fall != null;
+                  final lastAt = _mobileHairScanDate(data?['hairLastScanAt']);
+                  final lastLine = lastAt != null
+                      ? 'Last scan: ${DateFormat('d MMM y').format(lastAt)}'
+                      : 'Last scan: None';
 
-              final rawDocs = scansSnap.data?.docs ?? [];
-              final sorted = [...rawDocs]..sort(
-                  (a, b) => _mobileCompareScanCreated(
-                    a.data()['createdAt'],
-                    b.data()['createdAt'],
-                  ),
-                );
+                  final rawDocs = scansSnap.data?.docs ?? [];
+                  final sorted = [...rawDocs]..sort(
+                      (a, b) => _mobileCompareScanCreated(
+                        a.data()['createdAt'],
+                        b.data()['createdAt'],
+                      ),
+                    );
 
-              final metrics = [
-                _HairMetric(label: 'Hair Strength', value: hasData ? strength : null, color: const Color(0xFF59C6B0)),
-                _HairMetric(label: 'Scalp Health', value: hasData ? scalp : null, color: const Color(0xFFB76BCA)),
-                _HairMetric(label: 'Hair Damage Level', value: hasData ? damage : null, color: const Color(0xFF7B9ACD)),
-                _HairMetric(label: 'Hair Fall Risk', value: hasData ? fall : null, color: const Color(0xFFB7BD56)),
-              ];
+                  final apptLoading = apptSnap.connectionState == ConnectionState.waiting;
+                  final appointmentReminder = nextUpcomingAppointmentSummary(apptSnap.data?.docs ?? const []);
+                  final routineTip = data?['hairLatestRoutineTip']?.toString();
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _HairHealthCard(
-                    lastScanLine: lastLine,
-                    metrics: metrics,
-                    onAddTap: onReminderAdd,
-                  ),
-                  const SizedBox(height: 12),
-                  _AiSuggestionCard(onTap: onAiTap),
-                  const SizedBox(height: 14),
-                  _HairHealthProgressCard(scanDocs: sorted),
-                ],
+                  final metrics = [
+                    _HairMetric(label: 'Hair Strength', value: hasData ? strength : null, color: const Color(0xFF59C6B0)),
+                    _HairMetric(label: 'Scalp Health', value: hasData ? scalp : null, color: const Color(0xFFB76BCA)),
+                    _HairMetric(label: 'Hair Damage Level', value: hasData ? damage : null, color: const Color(0xFF7B9ACD)),
+                    _HairMetric(label: 'Hair Fall Risk', value: hasData ? fall : null, color: const Color(0xFFB7BD56)),
+                  ];
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _HairHealthCard(
+                        lastScanLine: lastLine,
+                        metrics: metrics,
+                        onAddTap: onReminderAdd,
+                        appointmentReminder: appointmentReminder,
+                        appointmentsLoading: apptLoading,
+                      ),
+                      const SizedBox(height: 12),
+                      _AiSuggestionCard(onTap: onAiTap, latestTip: routineTip),
+                      const SizedBox(height: 14),
+                      _HairHealthProgressCard(scanDocs: sorted),
+                    ],
+                  );
+                },
               );
             },
           );
@@ -314,9 +326,12 @@ class _MobileDashboardContent extends StatelessWidget {
           lastScanLine: 'Last scan: None',
           metrics: emptyMetrics,
           onAddTap: onReminderAdd,
+          appointmentReminder: null,
+          appointmentsLoading: false,
+          firebaseReady: false,
         ),
         const SizedBox(height: 12),
-        _AiSuggestionCard(onTap: onAiTap),
+        _AiSuggestionCard(onTap: onAiTap, latestTip: null),
         const SizedBox(height: 14),
         const _HairHealthProgressCard(scanDocs: []),
       ],
@@ -418,11 +433,17 @@ class _HairHealthCard extends StatelessWidget {
     required this.lastScanLine,
     required this.metrics,
     required this.onAddTap,
+    this.appointmentReminder,
+    this.appointmentsLoading = false,
+    this.firebaseReady = true,
   });
 
   final String lastScanLine;
   final List<_HairMetric> metrics;
   final VoidCallback onAddTap;
+  final AppointmentReminderLines? appointmentReminder;
+  final bool appointmentsLoading;
+  final bool firebaseReady;
 
   @override
   Widget build(BuildContext context) {
@@ -486,7 +507,13 @@ class _HairHealthCard extends StatelessWidget {
             itemBuilder: (context, index) => _MetricMiniCard(metric: metrics[index]),
           ),
           const SizedBox(height: 10),
-          _ReminderCard(onAddTap: onAddTap, isEmbedded: true),
+          _ReminderCard(
+            onAddTap: onAddTap,
+            isEmbedded: true,
+            reminder: appointmentReminder,
+            appointmentsLoading: appointmentsLoading,
+            firebaseReady: firebaseReady,
+          ),
         ],
       ),
     );
@@ -497,10 +524,16 @@ class _ReminderCard extends StatelessWidget {
   const _ReminderCard({
     required this.onAddTap,
     this.isEmbedded = false,
+    this.reminder,
+    this.appointmentsLoading = false,
+    this.firebaseReady = true,
   });
 
   final VoidCallback onAddTap;
   final bool isEmbedded;
+  final AppointmentReminderLines? reminder;
+  final bool appointmentsLoading;
+  final bool firebaseReady;
 
   @override
   Widget build(BuildContext context) {
@@ -529,20 +562,33 @@ class _ReminderCard extends StatelessWidget {
             child: const Icon(Icons.notifications_none_rounded, size: 18, color: Colors.black),
           ),
           const SizedBox(width: 10),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Reminder', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
-                SizedBox(height: 2),
-                Text(
-                  'Today 10 AM\nApply Hair Organic Oil',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  // Reduced reminder text size for a denser visual block.
-                  style: TextStyle(fontSize: 10.5, color: Color(0xFF666666), height: 1.2),
-                ),
-              ],
+          Expanded(
+            child: Builder(
+              builder: (context) {
+                final String text;
+                if (!firebaseReady) {
+                  text = 'Sign in to see bookings here.';
+                } else if (appointmentsLoading) {
+                  text = 'Loading…';
+                } else if (reminder != null) {
+                  text = '${reminder!.whenLine}\n${reminder!.detailLine}';
+                } else {
+                  text = 'No upcoming appointment\nBook from My Appointments.';
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Reminder', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                    const SizedBox(height: 2),
+                    Text(
+                      text,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 10.5, color: Color(0xFF666666), height: 1.2),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
           InkWell(
@@ -565,12 +611,18 @@ class _ReminderCard extends StatelessWidget {
 }
 
 class _AiSuggestionCard extends StatelessWidget {
-  const _AiSuggestionCard({required this.onTap});
+  const _AiSuggestionCard({required this.onTap, this.latestTip});
 
   final VoidCallback onTap;
+  final String? latestTip;
 
   @override
   Widget build(BuildContext context) {
+    final tip = latestTip?.trim();
+    final copy = (tip != null && tip.isNotEmpty)
+        ? tip
+        : 'Run a scalp analysis from My Scans to save your latest AI care recommendation here.';
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(18),
@@ -590,10 +642,10 @@ class _AiSuggestionCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Text(
-                'AI will analyses your hair and make a auto daily routine',
-                style: TextStyle(
+                copy,
+                style: const TextStyle(
                   fontSize: 15,
                   height: 1.25,
                   fontWeight: FontWeight.w600,

@@ -605,10 +605,10 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
               children: [
                 _buildTopBar(context, auth, isDesktop: isDesktop),
                 Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  child: StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
                     stream: FirebaseService.getAppointmentsForDoctor(userId),
                     builder: (context, snap) {
-                      final docs = snap.data?.docs ?? [];
+                      final docs = snap.data ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
                       return StreamBuilder<
                         DocumentSnapshot<Map<String, dynamic>>
                       >(
@@ -627,7 +627,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
                             profile: p,
                             docs: docs,
                             loading:
-                                snap.connectionState == ConnectionState.waiting,
+                                snap.connectionState == ConnectionState.waiting && !snap.hasData,
                           );
                         },
                       );
@@ -662,10 +662,10 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
 
   Widget _sidebarColumn(BuildContext context, String userId, String name) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
       stream: FirebaseService.getAppointmentsForDoctor(userId),
       builder: (context, snap) {
-        final docs = snap.data?.docs ?? [];
+        final docs = snap.data ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         final apptBadge = docs.length.clamp(0, 999);
         final patientIds = docs
             .map((d) => d.data()['userId']?.toString())

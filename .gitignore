@@ -11,7 +11,21 @@ backend/models/*.keras
 # Backend secrets
 backend/.env
 backend/firebase-service-account.json
+backend/firebase-service-account-safe-hair-274.json
 **/firebase-service-account.json
+**/*firebase-adminsdk*.json
+
+# Flutter build output
+mobile_app/build/
+
+# Local eval / generated dataset runs (keep repo pushable)
+backend/_smoke_eval/
+ai_model/datasets/
+backend/datasets/scalp_topdown/raw_aug_500/
+backend/datasets/scalp_topdown/raw_auto/
+backend/datasets/scalp_topdown/raw_synth/
+backend/datasets/scalp_topdown/structured/
+backend/datasets/scalp_topdown/structured_aug/
 
 # Miscellaneous
 *.class
