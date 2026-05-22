@@ -52,6 +52,8 @@ class ScalpAnalysisModel {
   final int? estimateReliabilityPercent;
   /// Short legal/clinical disclaimer for graft and area estimates.
   final String? estimateDisclaimer;
+  /// Which overlay colors were drawn: red / teal / orange (from backend detection).
+  final Map<String, bool>? overlayLegend;
 
   ScalpAnalysisModel({
     required this.id,
@@ -81,7 +83,31 @@ class ScalpAnalysisModel {
     this.analysisSummary,
     this.estimateReliabilityPercent,
     this.estimateDisclaimer,
+    this.overlayLegend,
   });
+
+  static Map<String, bool>? parseOverlayLegend(dynamic raw) {
+    if (raw is! Map) return null;
+    return {
+      if (raw.containsKey('red')) 'red': raw['red'] == true,
+      if (raw.containsKey('teal')) 'teal': raw['teal'] == true,
+      if (raw.containsKey('orange')) 'orange': raw['orange'] == true,
+    };
+  }
+
+  static String overlayLegendCaption(Map<String, bool>? legend) {
+    if (legend == null) {
+      return 'Outlines only if detected: red = severe bald · teal = mild thinning · yellow/orange = dandruff/irritation';
+    }
+    final parts = <String>[];
+    if (legend['red'] == true) parts.add('red = severe bald');
+    if (legend['teal'] == true) parts.add('teal = mild thinning');
+    if (legend['orange'] == true) parts.add('yellow/orange = dandruff/irritation');
+    if (parts.isEmpty) {
+      return 'No colored outlines on this photo (thinning / bald / dandruff not detected).';
+    }
+    return 'Shown on photo: ${parts.join(' · ')}';
+  }
 
   factory ScalpAnalysisModel.fromMap(Map<String, dynamic> map) {
     return ScalpAnalysisModel(
@@ -124,6 +150,7 @@ class ScalpAnalysisModel {
       analysisSummary: _nullableString(map['analysis_summary'] ?? map['analysisSummary']),
       estimateReliabilityPercent: _nullableInt(map['estimate_reliability_percent'] ?? map['estimateReliabilityPercent']),
       estimateDisclaimer: _nullableString(map['estimate_disclaimer'] ?? map['estimateDisclaimer']),
+      overlayLegend: parseOverlayLegend(map['overlay_legend'] ?? map['overlayLegend']),
     );
   }
 
@@ -154,5 +181,6 @@ class ScalpAnalysisModel {
         if (analysisSummary != null) 'analysisSummary': analysisSummary,
         if (estimateReliabilityPercent != null) 'estimateReliabilityPercent': estimateReliabilityPercent,
         if (estimateDisclaimer != null) 'estimateDisclaimer': estimateDisclaimer,
+        if (overlayLegend != null) 'overlayLegend': overlayLegend,
       };
 }

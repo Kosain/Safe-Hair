@@ -146,6 +146,9 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
         analysisSummary: apiResult['analysis_summary']?.toString() ?? apiResult['analysisSummary']?.toString(),
         estimateReliabilityPercent: int.tryParse('${apiResult['estimate_reliability_percent'] ?? apiResult['estimateReliabilityPercent'] ?? ''}'),
         estimateDisclaimer: apiResult['estimate_disclaimer']?.toString() ?? apiResult['estimateDisclaimer']?.toString(),
+        overlayLegend: ScalpAnalysisModel.parseOverlayLegend(
+          apiResult['overlay_legend'] ?? apiResult['overlayLegend'],
+        ),
       );
 
       // Upload image to Firebase Storage if available (don't block on failure)
@@ -592,9 +595,7 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
           if (a.overlayImageBase64 != null && a.overlayImageBase64!.isNotEmpty) ...[
             const SizedBox(height: 16),
             Text(
-              a.viewOrientation == 'front'
-                  ? 'Temple recession zones (yellow highlight)'
-                  : 'Crown view: yellow-green = thinning, orange = bald (vertex)',
+              ScalpAnalysisModel.overlayLegendCaption(a.overlayLegend),
               style: TextStyle(fontSize: 12, color: AppColors.textGrey),
             ),
             const SizedBox(height: 8),

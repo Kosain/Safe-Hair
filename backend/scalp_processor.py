@@ -44,7 +44,14 @@ def _has_frontal_face(img_bgr: np.ndarray) -> bool:
             minNeighbors=5,
             minSize=(60, 60),
         )
-        return len(faces) > 0
+        if len(faces) == 0:
+            return False
+        h = img_bgr.shape[0]
+        # Top-down crown photos must not trigger frontal overlays (cascade false positives).
+        for (_x, y, _fw, fh) in faces:
+            if (y + fh * 0.5) > h * 0.40:
+                return True
+        return False
     except Exception:
         return False
 
@@ -334,6 +341,7 @@ def _frontal_temple_scalp_masks(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.nda
     mask_skin = cv2.bitwise_and(mask_skin, forehead)
     # Hard guard: no temple segmentation outside head ellipse (blocks wallpaper skin-tones).
     mask_skin = cv2.bitwise_and(mask_skin, _frontal_head_guard_mask(h, w))
+    mask_skin = cv2.bitwise_and(mask_skin, cv2.bitwise_not(_colored_background_mask(img_bgr)))
     k_skin = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask_skin = cv2.morphologyEx(mask_skin, cv2.MORPH_CLOSE, k_skin)
 
@@ -424,6 +432,79 @@ def _head_roi_mask(h: int, w: int) -> np.ndarray:
     return head_roi
 
 
+def _colored_background_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Pixels to exclude from scalp AI (blue/cyan fabric, saturated backdrop at frame edges).
+    Returns uint8 mask where 255 = background (do not paint metrics/overlays here).
+    """
+    h, w = img_bgr.shape[:2]
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0]
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    blue_fabric = ((hue >= 82) & (hue <= 132) & (sat > 32) & (val > 35)).astype(np.uint8) * 255
+    green_backdrop = ((hue >= 35) & (hue <= 85) & (sat > 40) & (val > 40)).astype(np.uint8) * 255
+    margin = max(6, int(min(h, w) * 0.06))
+    border = np.zeros((h, w), dtype=np.uint8)
+    border[:margin, :] = 255
+    border[h - margin :, :] = 255
+    border[:, :margin] = 255
+    border[:, w - margin :] = 255
+    border_color = cv2.bitwise_and(border, ((sat > 55) | (blue_fabric > 0)).astype(np.uint8) * 255)
+    return cv2.bitwise_or(cv2.bitwise_or(blue_fabric, green_backdrop), border_color)
+
+
+def _crown_topdown_layout(img_bgr: np.ndarray) -> bool:
+    """True when the head/crown sits in the center with darker hair and brighter periphery (typical top photo)."""
+    h, w = img_bgr.shape[:2]
+    if h < 100 or w < 100:
+        return False
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    cx, cy = w // 2, int(h * 0.46)
+    r = int(min(h, w) * 0.24)
+    y0, y1 = max(0, cy - r), min(h, cy + r)
+    x0, x1 = max(0, cx - r), min(w, cx + r)
+    center_mean = float(np.mean(gray[y0:y1, x0:x1]))
+    patches = [
+        gray[0 : int(h * 0.22), 0 : int(w * 0.28)],
+        gray[0 : int(h * 0.22), int(w * 0.72) : w],
+        gray[int(h * 0.72) : h, 0 : int(w * 0.35)],
+        gray[int(h * 0.72) : h, int(w * 0.65) : w],
+    ]
+    corner_mean = float(np.mean(np.concatenate([p.ravel() for p in patches if p.size > 0])))
+    head = _head_roi_mask(h, w) > 0
+    hairish = (gray < center_mean + 22) & head
+    hair_frac = float(np.sum(hairish)) / (float(np.sum(head)) + 1e-6)
+    if center_mean + 6.0 < corner_mean and hair_frac > 0.07:
+        return True
+    # Visible scalp in crown center (thinning/bald top shot even when corners are bright fabric).
+    gray_u8 = gray.astype(np.uint8)
+    scalp_like = (gray_u8 > 95) & (gray_u8 < 200) & head
+    center_roi = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(center_roi, (cx, cy), (int(w * 0.22), int(h * 0.20)), 0, 0, 360, 255, -1)
+    scalp_frac = float(np.sum(scalp_like & (center_roi > 0))) / (float(np.sum(center_roi > 0)) + 1e-6)
+    return scalp_frac > 0.14
+
+
+def _vertex_analysis_keep_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """Where vertex/top overlays and CNN masks are allowed."""
+    h, w = img_bgr.shape[:2]
+    roi = cv2.bitwise_and(_head_roi_mask(h, w), _vertex_keyhole_mask(h, w))
+    bg = _colored_background_mask(img_bgr)
+    return cv2.bitwise_and(roi, cv2.bitwise_not(bg))
+
+
+def _contour_mostly_inside_zone(contour: np.ndarray, zone: np.ndarray, min_ratio: float = 0.68) -> bool:
+    h, w = zone.shape[:2]
+    painted = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(painted, [contour], -1, color=255, thickness=-1)
+    area = int(cv2.countNonZero(painted))
+    if area < 120:
+        return False
+    inside = int(cv2.countNonZero(cv2.bitwise_and(painted, zone)))
+    return (inside / float(area)) >= min_ratio
+
+
 def _vertex_keyhole_mask(h: int, w: int) -> np.ndarray:
     """
     Clinical-style ROI: narrow toward the front (bottom of frame), widening over the crown — keyhole / flask shape.
@@ -506,101 +587,287 @@ def _draw_vertex_keyhole_overlay(
         np.copyto(overlay_bgr, blended2)
 
 
+def _dandruff_irritation_mask(
+    img_bgr: np.ndarray,
+    keep_zone: np.ndarray,
+    *,
+    exclude_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, bool]:
+    """
+    Yellow/orange outlines only when real irritation/dandruff is visible.
+    Avoids marking normal thinning texture or bare scalp as 'infection'.
+    Returns (mask, should_draw).
+    """
+    h, w = img_bgr.shape[:2]
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    # Scalp skin between hairs (not dark hair strands).
+    scalp_skin = ((sat < 95) & (val > 72) & (val < 210)).astype(np.uint8) * 255
+    red_a = cv2.inRange(hsv, (0, 55, 55), (12, 255, 255))
+    red_b = cv2.inRange(hsv, (168, 50, 50), (180, 255, 255))
+    # White/yellow flakes on scalp.
+    flake = cv2.inRange(hsv, (15, 15, 140), (40, 120, 255))
+    irrit = cv2.bitwise_or(cv2.bitwise_or(red_a, red_b), flake)
+    irrit = cv2.bitwise_and(irrit, scalp_skin)
+    irrit = cv2.bitwise_and(irrit, keep_zone)
+    if exclude_mask is not None:
+        irrit = cv2.bitwise_and(irrit, cv2.bitwise_not(exclude_mask))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    irrit = cv2.morphologyEx(irrit, cv2.MORPH_OPEN, k)
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(irrit, connectivity=8)
+    cleaned = np.zeros((h, w), dtype=np.uint8)
+    zone_px = max(1, int(cv2.countNonZero(keep_zone)))
+    total_irrit = 0
+    n_kept = 0
+    max_area = int(0.025 * h * w)
+    for lbl in range(1, n_labels):
+        area = int(stats[lbl, cv2.CC_STAT_AREA])
+        if 35 <= area <= max_area:
+            cleaned[labels == lbl] = 255
+            total_irrit += area
+            n_kept += 1
+    # Need clear evidence: enough pixels and at least two spots OR one medium patch.
+    should_draw = bool(
+        n_kept >= 2
+        or (n_kept >= 1 and total_irrit >= max(120, int(0.004 * zone_px)))
+    )
+    return cleaned, should_draw
+
+
+def _mean_prob_in_contour(prob: np.ndarray, contour: np.ndarray, h: int, w: int) -> float:
+    painted = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(painted, [contour], -1, 255, -1)
+    vals = prob[painted > 0]
+    if vals.size == 0:
+        return 0.0
+    return float(np.mean(vals))
+
+
+def _severity_zone_masks(
+    prob: Optional[np.ndarray],
+    bald_mask: np.ndarray,
+    thin_mask: np.ndarray,
+    zone: np.ndarray,
+    *,
+    t_severe: float = 0.40,
+    t_mild: float = 0.20,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Split affected areas like a clinician: red = severe bald hotspots, teal = mild thinning only.
+    Multiple separate outlines (crown + frontal patches), not one giant blob.
+    """
+    h, w = zone.shape[:2]
+    severe = np.zeros((h, w), dtype=np.uint8)
+    mild = np.zeros((h, w), dtype=np.uint8)
+    union = cv2.bitwise_or(bald_mask, thin_mask)
+    union = cv2.bitwise_and(union, zone)
+    if cv2.countNonZero(union) < 30:
+        return severe, mild
+
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    work = cv2.morphologyEx(union, cv2.MORPH_CLOSE, k)
+    work = cv2.morphologyEx(work, cv2.MORPH_OPEN, k)
+    contours, _ = cv2.findContours(work, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < 80.0:
+            continue
+        mp = _mean_prob_in_contour(prob, c, h, w) if prob is not None else 0.0
+        if prob is None:
+            # Fallback without CNN prob: bald mask pixels inside contour dominate => severe.
+            painted = np.zeros((h, w), dtype=np.uint8)
+            cv2.drawContours(painted, [c], -1, 255, -1)
+            bald_frac = float(cv2.countNonZero(cv2.bitwise_and(painted, bald_mask))) / (area + 1e-6)
+            if bald_frac >= 0.55 and area >= 120:
+                cv2.drawContours(severe, [c], -1, 255, -1)
+            elif bald_frac >= 0.15 or area >= 200:
+                cv2.drawContours(mild, [c], -1, 255, -1)
+            continue
+        if mp >= t_severe or (mp >= 0.34 and area >= 280):
+            cv2.drawContours(severe, [c], -1, 255, -1)
+        elif mp >= t_mild:
+            cv2.drawContours(mild, [c], -1, 255, -1)
+
+    mild = cv2.bitwise_and(mild, cv2.bitwise_not(severe))
+    return severe, mild
+
+
+def _contour_outline_points(contour: np.ndarray, *, smooth_eps_ratio: float = 0.004) -> np.ndarray:
+    """Smooth closed outline following the detected region shape."""
+    hull = cv2.convexHull(contour)
+    peri = cv2.arcLength(hull, True)
+    eps = max(1.5, smooth_eps_ratio * peri)
+    approx = cv2.approxPolyDP(hull, eps, True)
+    if len(approx) >= 3:
+        return approx
+    return hull
+
+
+def _draw_zone_outlines(
+    overlay_bgr: np.ndarray,
+    mask: np.ndarray,
+    *,
+    color_bgr: Tuple[int, int, int],
+    line_thickness: int,
+    min_area: float,
+    max_regions: int = 8,
+    prefer_center: bool = False,
+    fill_alpha: float = 0.0,
+) -> None:
+    """Closed color outlines tracing each affected area (not circles)."""
+    h, w = overlay_bgr.shape[:2]
+    work = mask.copy()
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, k)
+    work = cv2.morphologyEx(work, cv2.MORPH_OPEN, k)
+    contours, _ = cv2.findContours(work, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    center = np.array([w * 0.5, h * 0.44], dtype=np.float32)
+    ranked: List[Tuple[float, np.ndarray]] = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < min_area:
+            continue
+        m = cv2.moments(c)
+        if m["m00"] <= 0:
+            continue
+        ccx = m["m10"] / m["m00"]
+        ccy = m["m01"] / m["m00"]
+        dist = float(np.linalg.norm(np.array([ccx, ccy], dtype=np.float32) - center))
+        score = area - (1.4 * dist if prefer_center else 0.35 * dist)
+        ranked.append((score, c))
+    ranked.sort(key=lambda t: t[0], reverse=True)
+    for _, c in ranked[:max_regions]:
+        outline = _contour_outline_points(c)
+        if len(outline) < 3:
+            continue
+        if fill_alpha > 0:
+            fill_mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(fill_mask, [outline], 255)
+            layer = np.zeros_like(overlay_bgr)
+            layer[:, :] = color_bgr
+            am = (fill_mask.astype(np.float32) / 255.0) * fill_alpha
+            am3 = np.repeat(am[:, :, None], 3, axis=2)
+            blended = (
+                overlay_bgr.astype(np.float32) * (1.0 - am3) + layer.astype(np.float32) * am3
+            ).astype(np.uint8)
+            np.copyto(overlay_bgr, blended)
+        cv2.polylines(
+            overlay_bgr,
+            [outline],
+            isClosed=True,
+            color=color_bgr,
+            thickness=line_thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+
+def _draw_clinical_scalp_overlay(
+    overlay_bgr: np.ndarray,
+    img_bgr: np.ndarray,
+    h: int,
+    w: int,
+    bald_mask: np.ndarray,
+    thin_mask: np.ndarray,
+    keep_zone: np.ndarray,
+    prob: Optional[np.ndarray] = None,
+) -> Dict[str, bool]:
+    """
+    Draw outlines only for conditions that are actually present (reference-style blobs):
+      Red    = severe bald / high-risk bare scalp (hotspots)
+      Teal   = mild thinning (separate regions, not whole crown wash)
+      Yellow/orange = dandruff/irritation ONLY if detected
+    Returns which legend colors were drawn.
+    """
+    drawn = {"red": False, "teal": False, "orange": False}
+    keyhole = _vertex_keyhole_mask(h, w)
+    zone = cv2.bitwise_and(keep_zone, keyhole) if keep_zone.shape == keyhole.shape else keep_zone
+    bald_k = cv2.bitwise_and(bald_mask, zone)
+    thin_k = cv2.bitwise_and(thin_mask, zone)
+
+    severe_k, mild_k = _severity_zone_masks(prob, bald_k, thin_k, zone)
+
+    teal_bgr = (185, 205, 70)
+    yellow_bgr = (0, 210, 255)
+    orange_bgr = (0, 150, 255)
+    red_bgr = (35, 35, 235)
+    line_thickness = max(4, min(h, w) // 48)
+
+    # Teal — only if mild thinning regions exist.
+    if cv2.countNonZero(mild_k) >= 80:
+        _draw_zone_outlines(
+            overlay_bgr,
+            mild_k,
+            color_bgr=teal_bgr,
+            line_thickness=line_thickness,
+            min_area=100.0,
+            max_regions=8,
+            fill_alpha=0.05,
+            prefer_center=False,
+        )
+        drawn["teal"] = True
+
+    # Yellow/orange — only when dandruff/irritation is confidently visible.
+    dandruff_k, show_irrit = _dandruff_irritation_mask(
+        img_bgr, zone, exclude_mask=cv2.bitwise_or(severe_k, mild_k)
+    )
+    if show_irrit and cv2.countNonZero(dandruff_k) >= 35:
+        _draw_zone_outlines(
+            overlay_bgr,
+            dandruff_k,
+            color_bgr=yellow_bgr,
+            line_thickness=max(3, line_thickness),
+            min_area=30.0,
+            max_regions=8,
+            fill_alpha=0.04,
+        )
+        irrit_outer = cv2.dilate(
+            dandruff_k, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1
+        )
+        _draw_zone_outlines(
+            overlay_bgr,
+            irrit_outer,
+            color_bgr=orange_bgr,
+            line_thickness=max(2, line_thickness - 1),
+            min_area=30.0,
+            max_regions=8,
+            fill_alpha=0.0,
+        )
+        drawn["orange"] = True
+
+    # Red — severe bald hotspots (multiple patches allowed).
+    if cv2.countNonZero(severe_k) >= 60:
+        _draw_zone_outlines(
+            overlay_bgr,
+            severe_k,
+            color_bgr=red_bgr,
+            line_thickness=line_thickness + 1,
+            min_area=70.0,
+            max_regions=8,
+            fill_alpha=0.06,
+            prefer_center=True,
+        )
+        drawn["red"] = True
+
+    return drawn
+
+
 def _draw_vertex_bald_thin_overlay(
     overlay_bgr: np.ndarray,
     h: int,
     w: int,
     bald_mask: np.ndarray,
     thin_mask: np.ndarray,
+    img_bgr: Optional[np.ndarray] = None,
+    keep_zone: Optional[np.ndarray] = None,
 ) -> None:
-    """
-    Clinical-style vertex view: cyan = thinning (sparse hair / scalp show-through),
-    orange = bald (dominant scalp). Draws a smoothing contour outlining the actual
-    detected bald/thin area.
-    """
-    keyhole = _vertex_keyhole_mask(h, w)
-    thin_k = cv2.bitwise_and(thin_mask, keyhole)
-    bald_k = cv2.bitwise_and(bald_mask, keyhole)
-    seed0 = cv2.bitwise_or(bald_k, thin_k)
-    # Avoid painting unrelated regions when almost nothing is detected.
-    if cv2.countNonZero(seed0) < 22:
-        return
-    # Keep all tinting inside a band around AI-detected scalp only (not distant hair/background).
-    k_band = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (33, 33))
-    seed_band = cv2.dilate(seed0, k_band)
-    thin_k = cv2.bitwise_and(thin_k, seed_band)
-    bald_k = cv2.bitwise_and(bald_k, seed_band)
-    line_thickness = max(5, min(h, w) // 42)
-    red_bgr = (35, 35, 235)       # high-risk bald zone
-    yellow_bgr = (0, 215, 255)    # thinning zone
-    green_bgr = (80, 200, 90)     # low-density fringe
-
-    # derive a low-density fringe around thin zones for green marking
-    k_ring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    low_k = cv2.dilate(thin_k, k_ring)
-    low_k = cv2.bitwise_and(low_k, cv2.bitwise_not(thin_k))
-    low_k = cv2.bitwise_and(low_k, keyhole)
-    low_k = cv2.bitwise_and(low_k, seed_band)
-
-    for mask, color, alpha in (
-        (low_k, green_bgr, 0.10),
-        (thin_k, yellow_bgr, 0.22),
-        (bald_k, red_bgr, 0.20),
-    ):
-        if cv2.countNonZero(mask) < 8:
-            continue
-        layer = np.zeros_like(overlay_bgr)
-        layer[:, :] = color
-        am = (mask.astype(np.float32) / 255.0) * alpha
-        am3 = np.repeat(am[:, :, None], 3, axis=2)
-        blended = (
-            overlay_bgr.astype(np.float32) * (1.0 - am3) + layer.astype(np.float32) * am3
-        ).astype(np.uint8)
-        np.copyto(overlay_bgr, blended)
-
-    mask_combined = cv2.bitwise_or(bald_k, thin_k)
-    # Keep focus near crown center so side artifacts are suppressed.
-    yy, xx = np.indices((h, w))
-    cx, cy = (w * 0.5), (h * 0.44)
-    rx, ry = (w * 0.23), (h * 0.25)
-    center_prior = ((((xx - cx) ** 2) / (rx ** 2 + 1e-6) + ((yy - cy) ** 2) / (ry ** 2 + 1e-6)) <= 1.0).astype(np.uint8) * 255
-    mask_combined = cv2.bitwise_and(mask_combined, center_prior)
-
-    blur_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask_combined = cv2.morphologyEx(mask_combined, cv2.MORPH_CLOSE, blur_kernel)
-    mask_combined = cv2.morphologyEx(mask_combined, cv2.MORPH_OPEN, blur_kernel)
-
-    contours, _ = cv2.findContours(mask_combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        center = np.array([w * 0.5, h * 0.44], dtype=np.float32)
-        best = None
-        best_score = -1e9
-        for c in contours:
-            area = float(cv2.contourArea(c))
-            if area < 280.0:
-                continue
-            m = cv2.moments(c)
-            if m["m00"] <= 0:
-                continue
-            ccx = m["m10"] / m["m00"]
-            ccy = m["m01"] / m["m00"]
-            dist = float(np.linalg.norm(np.array([ccx, ccy], dtype=np.float32) - center))
-            score = area - 1.6 * dist
-            if score > best_score:
-                best_score = score
-                best = c
-        if best is not None:
-            hull = cv2.convexHull(best)
-            peri = cv2.arcLength(hull, True)
-            approx = cv2.approxPolyDP(hull, 0.005 * peri, True)
-            cv2.polylines(
-                overlay_bgr,
-                [approx],
-                isClosed=True,
-                color=red_bgr,
-                thickness=line_thickness,
-                lineType=cv2.LINE_AA,
-            )
+    """Backward-compatible entry: delegates to unified clinical color overlay."""
+    if img_bgr is None:
+        img_bgr = overlay_bgr.copy()
+    if keep_zone is None:
+        keep_zone = _vertex_analysis_keep_mask(img_bgr)
+    _draw_clinical_scalp_overlay(overlay_bgr, img_bgr, h, w, bald_mask, thin_mask, keep_zone, prob=None)
 
 
 def _preprocess(img: np.ndarray, max_side: int = 640) -> np.ndarray:
@@ -635,6 +902,7 @@ def _bald_area_mask_opencv(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     bright_scalp = gray > 75
     mask_skin = ((low_sat & high_val & bright_scalp).astype(np.uint8) * 255)
     mask_skin = cv2.bitwise_and(mask_skin, head_roi)
+    mask_skin = cv2.bitwise_and(mask_skin, cv2.bitwise_not(_colored_background_mask(img)))
 
     # 3) Hair candidates: dark/texture-rich regions.
     _, mask_dark = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -833,15 +1101,20 @@ def load_cnn_mask(image_bytes: bytes, model_path: Optional[str] = None) -> Optio
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    binary = cv2.bitwise_and(binary, _head_roi_mask(hh, ww))
+    img = _bytes_to_image(image_bytes)
+    img = _preprocess(img)
+    if img.shape[:2] != (hh, ww):
+        img = cv2.resize(img, (ww, hh), interpolation=cv2.INTER_AREA)
+    keep = _vertex_analysis_keep_mask(img)
+    binary = cv2.bitwise_and(binary, keep)
     return binary
 
 
 def _split_bald_and_thin_from_prob(
     prob: np.ndarray,
     *,
-    t_thin: float = 0.18,
-    t_bald: float = 0.42,
+    t_thin: float = 0.22,
+    t_bald: float = 0.40,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Split CNN probability into bald (high p) vs thinning (mid p). Hair = low p.
@@ -994,21 +1267,24 @@ def _process_frontal_scalp_image(
     overlay_b64 = None
     if return_overlay_base64:
         overlay = img.copy()
-        
-        line_thickness = max(5, min(h, w) // 42)
-        orange_bgr = (0, 165, 255) # Match the orange line from the top view
-        for approx in outline_contours_fb:
-            cv2.polylines(
-                overlay,
-                [approx],
-                isClosed=True,
-                color=orange_bgr,
-                thickness=line_thickness,
-                lineType=cv2.LINE_AA,
-            )
+        keep = cv2.bitwise_and(_forehead_hairline_roi(h, w), _frontal_head_guard_mask(h, w))
+        keep = cv2.bitwise_and(keep, cv2.bitwise_not(_colored_background_mask(img)))
+        k_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        bald_fb = cv2.erode(mask_scalp_fb, k_erode, iterations=1)
+        if cv2.countNonZero(bald_fb) < 40:
+            bald_fb = mask_scalp_fb.copy()
+        thin_fb = cv2.bitwise_and(mask_scalp_fb, cv2.bitwise_not(bald_fb))
+        prob_fb: Optional[np.ndarray] = None
+        if use_cnn and cnn_model_path:
+            prob_fb = _cnn_raw_probability_map(image_bytes, cnn_model_path)
+            if prob_fb is not None and prob_fb.shape[:2] != (h, w):
+                prob_fb = cv2.resize(prob_fb, (w, h), interpolation=cv2.INTER_LINEAR)
+        overlay_legend = _draw_clinical_scalp_overlay(overlay, img, h, w, bald_fb, thin_fb, keep, prob=prob_fb)
 
         _, buf = cv2.imencode(".jpg", overlay)
         overlay_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+    else:
+        overlay_legend = {"red": False, "teal": False, "orange": False}
 
     return {
         "bald_area_pixels": round(bald_area_px, 0),
@@ -1022,6 +1298,7 @@ def _process_frontal_scalp_image(
         "estimated_hair_count": est_h_mid,
         "segmentation_method": segmentation_method,
         "overlay_image_base64": overlay_b64,
+        "overlay_legend": overlay_legend,
         "contour_count": 2,
         "view_orientation": "front",
     }
@@ -1033,6 +1310,8 @@ def _routing_prefer_frontal(img_bgr: np.ndarray) -> bool:
     Be strict before selecting frontal mode; otherwise top/crown photos can be
     misrouted to temple/hairline overlays (which looks visually incorrect).
     """
+    if _is_likely_vertex_top_view(img_bgr) or _crown_topdown_layout(img_bgr):
+        return False
     frontal_flag = _is_frontal_view(img_bgr)
     vertex_flag = _is_likely_vertex_top_view(img_bgr)
     frontal_score = _frontal_view_score(img_bgr)
@@ -1110,12 +1389,17 @@ def process_scalp_image(
     prob = None
     if use_cnn and cnn_model_path:
         prob = _cnn_raw_probability_map(image_bytes, cnn_model_path)
+    keep = _vertex_analysis_keep_mask(img)
     if prob is not None:
+        prob = prob * (keep.astype(np.float32) / 255.0)
         bald_u, thin_u = _split_bald_and_thin_from_prob(prob)
         segmentation_method = "cnn_bald_thin"
     else:
         _, bald_u, thin_u = _bald_thin_masks_opencv_vertex(img, head_roi)
         segmentation_method = "opencv_bald_thin"
+
+    bald_u = cv2.bitwise_and(bald_u, keep)
+    thin_u = cv2.bitwise_and(thin_u, keep)
 
     mask_scalp = cv2.bitwise_or(bald_u, thin_u)
     _, mask_hair = _bald_area_mask_opencv(img)
@@ -1140,9 +1424,10 @@ def process_scalp_image(
     bald_ratio = min(1.0, bald_ratio)
 
     overlay_b64 = None
+    overlay_legend: Dict[str, bool] = {"red": False, "teal": False, "orange": False}
     if return_overlay_base64:
         overlay = img.copy()
-        _draw_vertex_bald_thin_overlay(overlay, h, w, bald_u, thin_u)
+        overlay_legend = _draw_clinical_scalp_overlay(overlay, img, h, w, bald_u, thin_u, keep, prob=prob)
 
         _, buf = cv2.imencode(".jpg", overlay)
         overlay_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
@@ -1161,6 +1446,7 @@ def process_scalp_image(
         "estimated_hair_count": est_h_mid,
         "segmentation_method": segmentation_method,
         "overlay_image_base64": overlay_b64,
+        "overlay_legend": overlay_legend,
         "contour_count": len(contours),
         "view_orientation": "top",
     }
@@ -1519,16 +1805,23 @@ def analyze_scalp_with_opencv(
         "Hair count is estimated from hair pixels in this photo; "
         "it reflects the visible region, not your full scalp."
     )
-    if is_front:
-        note = (
-            "Front-facing photo: orange outlines mark the organically detected recession zones (automated overlay, not a diagnosis). "
-            + note
-        )
-    elif not is_front and "bald_thin" in str(opencv_result.get("segmentation_method") or ""):
-        note = (
-            "Top/crown view: yellow-green tint = thinning (sparse hair); deeper orange = bald scalp. "
-            "Grafts use a weighted mix of both zones. " + note
-        )
+    legend = opencv_result.get("overlay_legend") if isinstance(opencv_result.get("overlay_legend"), dict) else {}
+    legend_parts: List[str] = []
+    if legend.get("red"):
+        legend_parts.append("red outline = high-risk bald (severe loss)")
+    if legend.get("teal"):
+        legend_parts.append("teal outline = mild thinning")
+    if legend.get("orange"):
+        legend_parts.append("yellow/orange outline = dandruff or irritation")
+    legend_txt = (
+        "Shown on photo: " + "; ".join(legend_parts) + ". "
+        if legend_parts
+        else "No colored risk outlines were added (condition not detected in this frame). "
+    )
+    view_label = "Front-facing photo" if is_front else "Top/crown view"
+    note = f"{view_label}: {legend_txt}(automated overlay, not a diagnosis). " + note
+    if not is_front and legend.get("red") or legend.get("teal"):
+        note += " Grafts use a weighted mix of bald + thin zones."
 
     seg = str(opencv_result.get("segmentation_method") or "")
     reliability = _estimate_reliability_percent(

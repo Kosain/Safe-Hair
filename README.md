@@ -16,10 +16,23 @@ safe_hair/
 - Backend:
   - `./run_backend.ps1` (PowerShell)
   - `run_backend.bat` (CMD)
+  - Trained models (auto-loaded from `backend/models/`): `scalp_seg.onnx`, `bald_regressor.joblib`, `scalp_conditions.joblib`
 - Mobile app:
   - `cd mobile_app`
   - `flutter pub get`
   - `flutter run`
 - Web app:
   - `cd mobile_app`
-  - `flutter run -d chrome`
+  - `flutter run -d chrome --web-port=8080`
+
+## Scalp AI overlays (FYP)
+
+Analysis uses a **trained CNN** (segmentation) plus **rule-based outlines** on each new photo — not hard-coded for one image.
+
+| Color | Meaning | Drawn when |
+|-------|---------|------------|
+| Red | Severe bald / high-risk bare scalp | Detected |
+| Teal | Mild thinning | Detected |
+| Yellow/orange | Dandruff or irritation | Detected only |
+
+Retrain: `cd backend` then `py train_all_ai_models.py` (see `backend/train_scalp_conditions.py` for condition labels).
