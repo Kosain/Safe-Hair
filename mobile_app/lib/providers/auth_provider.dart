@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import '../core/demo_accounts.dart';
 import '../services/firebase_service.dart';
 import '../services/api_service.dart';
 
@@ -19,6 +22,7 @@ class AuthProvider extends ChangeNotifier {
   /// After a completed registration fetch, used to avoid forcing `/gate` on token / profile updates for the same uid.
   String? _lastRegistrationCheckUid;
   String? _lastAuthError;
+  int _emailLoginDepth = 0;
 
   String _normalizeRole(String? value) {
     final raw = (value ?? '').trim().toLowerCase();
@@ -77,11 +81,19 @@ class AuthProvider extends ChangeNotifier {
         _lastRegistrationCheckUid = null;
         ApiService().clearSession();
       }
-      await _refreshRegistrationFlags();
+      if (_emailLoginDepth == 0) {
+        await _refreshRegistrationFlags();
+      }
     });
 
     // Initial check (for app refresh scenarios).
     _refreshRegistrationFlags();
+  }
+
+  void beginEmailLogin() => _emailLoginDepth++;
+
+  void endEmailLogin() {
+    if (_emailLoginDepth > 0) _emailLoginDepth--;
   }
 
   void setRole(String role) {
@@ -117,20 +129,49 @@ class AuthProvider extends ChangeNotifier {
       return;
     }
 
-    try {
-      final doctorProfile = await FirebaseService.getDoctorProfile(
-        uid,
-      ).timeout(const Duration(seconds: 6), onTimeout: () => null);
-      final patientSnap = await FirebaseService.getPatientDetails(
-        uid,
-      ).timeout(const Duration(seconds: 6), onTimeout: () => null);
+    const profileTimeout = Duration(seconds: 18);
+    var profileTimedOut = false;
 
-      _isDoctorRegistered =
-          doctorProfile != null && (doctorProfile['profileCompleted'] == true);
-      _isPatientRegistered = patientSnap != null;
-    } catch (_) {
+    try {
+      final doctorProfile = await FirebaseService.getDoctorProfile(uid).timeout(
+        profileTimeout,
+        onTimeout: () {
+          profileTimedOut = true;
+          return null;
+        },
+      );
+      final patientSnap = await FirebaseService.getPatientDetails(uid).timeout(
+        profileTimeout,
+        onTimeout: () {
+          profileTimedOut = true;
+          return null;
+        },
+      );
+
+      final docComplete = doctorProfile?['profileCompleted'];
+      _isDoctorRegistered = doctorProfile != null &&
+          (docComplete == true || docComplete == null);
+      _isPatientRegistered = patientSnap != null && patientSnap.exists;
+
+      if (DemoAccounts.isPatientEmail(_userEmail)) {
+        _isPatientRegistered = true;
+        _role = 'patient';
+      }
+      if (DemoAccounts.isDoctorEmail(_userEmail) && _role == 'doctor') {
+        _isDoctorRegistered = true;
+      }
+    } catch (e) {
+      debugPrint('AuthProvider profile check error: $e');
       // Never keep the app stuck on /gate if profile checks fail.
-      // Fail-open based on selected role so user can proceed.
+      if (_role == 'doctor') {
+        _isDoctorRegistered = true;
+      } else {
+        _isPatientRegistered = true;
+      }
+    }
+
+    // Slow Firestore on web must not send completed patients back to onboarding.
+    if (profileTimedOut) {
       if (_role == 'doctor') {
         _isDoctorRegistered = true;
       } else {
@@ -163,6 +204,43 @@ class AuthProvider extends ChangeNotifier {
   /// Public trigger for screens to re-check registration after profile updates.
   Future<void> refreshRegistrationStatus() => _refreshRegistrationFlags();
 
+  /// After doctor email login: link legacy `doctors` doc to Auth uid if needed.
+  Future<void> prepareDoctorSessionAfterLogin() async {
+    final uid = _userId;
+    final email = _userEmail;
+    _role = 'doctor';
+    _roleChosenThisSession = true;
+    if (uid != null && email != null) {
+      await FirebaseService.ensureDoctorProfileIfMissing(
+        uid: uid,
+        email: email,
+        displayName: _userName,
+      );
+    }
+    await _refreshRegistrationFlags();
+    if (DemoAccounts.isDoctorEmail(email)) {
+      markDoctorRegistered();
+    }
+  }
+
+  /// After patient email login: ensure Firestore profile exists, then refresh flags.
+  Future<void> preparePatientSessionAfterLogin() async {
+    final uid = _userId;
+    final email = _userEmail;
+    if (uid == null || email == null) return;
+    _role = 'patient';
+    _roleChosenThisSession = true;
+    await FirebaseService.ensurePatientProfileIfMissing(
+      uid: uid,
+      email: email,
+      displayName: _userName,
+    );
+    await _refreshRegistrationFlags();
+    if (DemoAccounts.isPatientEmail(email)) {
+      markPatientRegistered();
+    }
+  }
+
   /// After a successful doctor profile write, use if Firestore read is briefly stale.
   void markDoctorRegistered() {
     final u = _userId;
@@ -184,6 +262,7 @@ class AuthProvider extends ChangeNotifier {
 
   Future<bool> signInWithEmail(String email, String password) async {
     _lastAuthError = null;
+    await FirebaseService.ensureReady();
     final cred = await FirebaseService.signInWithEmail(email, password);
     if (cred != null && cred.user != null) {
       _userId = cred.user!.uid;

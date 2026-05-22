@@ -36,3 +36,19 @@ Then run:
 If Firebase rejects a password or an email is already taken by another project, edit `DOCTORS` in `backend/scripts/seed_demo_doctors.py` and run again (existing users get a password reset from the script).
 
 After seeding, sign in as **Doctor** with any row above; the dashboard loads appointments where `doctorId` equals that user’s UID. Book from the patient app after the doctors list loads from Firestore so `doctorId` matches.
+
+## Demo patient (Moeed)
+
+| Email | Password |
+| --- | --- |
+| moeed123@gmail.com | `Moeed123@` (capital **M**, ends with `@`) |
+
+Seed Auth + `patient_details/{uid}`:
+
+```bash
+py backend\scripts\seed_demo_patient_moeed.py
+```
+
+**Password is case-sensitive.** Wrong examples that fail: `moeed123@`, `Moeed123`, `moed123@gmail.com`.
+
+If doctor login says “Invalid email or password” but you use the table above, your backend `firebase-service-account.json` is probably for project **safehair-f7891** while the app uses **safe-hair-274**. Download the Admin key from **safe-hair-274** and run the seed scripts again.

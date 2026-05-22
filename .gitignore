@@ -8,10 +8,11 @@ backend/models/*.joblib
 backend/models/*.keras
 !backend/models/.gitkeep
 
-# Backend secrets
+# Backend secrets (only use safe-hair-274 keys — see firebase/README.md)
 backend/.env
 backend/firebase-service-account.json
 backend/firebase-service-account-safe-hair-274.json
+backend/safehair-f7891-*.json
 **/firebase-service-account.json
 **/*firebase-adminsdk*.json
 

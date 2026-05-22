@@ -1304,6 +1304,8 @@ def analyze_scalp_with_opencv(
     cnn_model_path: Optional[str] = None,
     use_trained_model: bool = False,
     trained_model_path: Optional[str] = None,
+    use_condition_model: bool = False,
+    condition_model_path: Optional[str] = None,
     patient_profile_gender: Optional[str] = None,
     patient_profile_age: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -1480,6 +1482,39 @@ def analyze_scalp_with_opencv(
     # Always add at least one general recommendation.
     recs.append("Limit heat styling and always use a heat protectant spray when required.")
 
+    condition_probs: Dict[str, float] = {}
+    if use_condition_model and condition_model_path:
+        try:
+            from scalp_conditions import predict_conditions
+
+            img_bgr = _bytes_to_image(image_bytes)
+            mask_gray = None
+            overlay_b64 = opencv_result.get("overlay_image_base64")
+            if overlay_b64:
+                try:
+                    import base64 as _b64
+
+                    raw = _b64.b64decode(overlay_b64)
+                    arr = np.frombuffer(raw, dtype=np.uint8)
+                    dec = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                    if dec is not None:
+                        mask_gray = dec
+                except Exception:
+                    pass
+            ml_conds, condition_probs = predict_conditions(
+                img_bgr,
+                model_path=condition_model_path,
+                mask_gray=mask_gray,
+                mask_ratio=float(bald_ratio),
+                class_id_norm=float(np.clip(bald_ratio * 1.2, 0, 1)),
+            )
+            for c in ml_conds:
+                label = f"Detected: {c}"
+                if label not in conditions and c not in conditions:
+                    conditions.insert(0, label)
+        except Exception:
+            pass
+
     note = (
         "Hair count is estimated from hair pixels in this photo; "
         "it reflects the visible region, not your full scalp."
@@ -1552,6 +1587,9 @@ def analyze_scalp_with_opencv(
         "estimate_reliability_percent": reliability,
         "estimate_disclaimer": estimate_disclaimer,
     }
+    if condition_probs:
+        out["condition_probs"] = condition_probs
+        out["condition_model_labels"] = list(condition_probs.keys())
     if patient_profile_gender and str(patient_profile_gender).strip():
         out["patient_profile_gender"] = str(patient_profile_gender).strip()
     if pg:

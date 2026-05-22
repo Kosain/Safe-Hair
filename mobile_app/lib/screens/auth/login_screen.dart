@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/validators.dart';
 import '../../providers/auth_provider.dart';
+import '../../core/demo_accounts.dart';
 import '../../services/firebase_service.dart';
 import '../../widgets/animated_primary_button.dart';
 import '../../widgets/firebase_init_banner.dart';
@@ -317,45 +318,52 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
     final auth = context.read<AuthProvider>();
-    final success = await auth.signInWithEmail(
-          _emailController.text.trim(),
-          _passwordController.text,
-        );
-    if (mounted) {
-      setState(() => _loading = false);
-      if (success) {
-        await auth.refreshRegistrationStatus();
+    final email = _emailController.text.trim();
+    auth.setRole(widget.role);
+    auth.beginEmailLogin();
+    try {
+      if (!await FirebaseService.ensureReady()) {
         if (!mounted) return;
-        final wantsDoctor = widget.role == 'doctor';
-        if (wantsDoctor) {
-          if (auth.isDoctorRegistered) {
-            context.go('/doctor-dashboard');
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Welcome back. Complete your clinic profile to use the doctor dashboard.',
-                ),
-              ),
-            );
-            context.go('/doctor-onboarding');
-          }
-        } else {
-          if (auth.isPatientRegistered) {
-            context.go('/dashboard');
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Patient profile not complete. Please complete registration details.'),
-              ),
-            );
-            context.go('/patient-details');
-          }
-        }
-      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseService.lastInitError ??
+                  'Firebase is not ready. Stop the app, run again, and check the orange warning on the role screen.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final success = await auth.signInWithEmail(email, _passwordController.text);
+      if (!mounted) return;
+      if (!success) {
         final msg = auth.lastAuthError ?? 'Invalid email or password.';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        return;
       }
+
+      final wantsDoctor = widget.role == 'doctor';
+      if (wantsDoctor) {
+        await auth.prepareDoctorSessionAfterLogin();
+        if (!mounted) return;
+        if (DemoAccounts.isDoctorEmail(email) || auth.isDoctorRegistered) {
+          context.go('/doctor-dashboard');
+        } else {
+          context.go('/doctor-onboarding');
+        }
+      } else {
+        await auth.preparePatientSessionAfterLogin();
+        if (!mounted) return;
+        if (DemoAccounts.isPatientEmail(email) || auth.isPatientRegistered) {
+          context.go('/dashboard');
+        } else {
+          context.go('/patient-details');
+        }
+      }
+    } finally {
+      auth.endEmailLogin();
+      if (mounted) setState(() => _loading = false);
     }
   }
 

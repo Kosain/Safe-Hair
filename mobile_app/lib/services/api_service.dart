@@ -215,15 +215,7 @@ class ApiService {
         return v1;
       }
 
-      // If local backend is offline, avoid sending additional failing requests.
-      if (_usesLocalBackend) {
-        return {
-          '_error':
-              'AI backend is not reachable at $_baseUrl. Start backend server on port 8000, then try again.'
-        };
-      }
-
-      // Legacy fallback.
+      // Direct AI route (trained OpenCV + ONNX + joblib on backend).
       final base64Image = base64Encode(imageBytes);
       final res = await http
           .post(
@@ -236,12 +228,33 @@ class ApiService {
               if (patientAge != null && patientAge > 0 && patientAge < 120) 'patient_age': patientAge,
             }),
           )
-          .timeout(const Duration(seconds: 30));
-      if (res.statusCode == 200) return jsonDecode(res.body) as Map<String, dynamic>;
+          .timeout(const Duration(seconds: 60));
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        if (body is Map<String, dynamic>) {
+          if (body['success'] == true) {
+            return Map<String, dynamic>.from(body)..remove('success');
+          }
+          return body;
+        }
+      }
+
+      if (_usesLocalBackend && !await isBackendReachable()) {
+        return {
+          '_error':
+              'AI backend is not reachable at $_baseUrl. Run backend\\start_backend.bat (port 8000), then try again.'
+        };
+      }
       return {'_error': 'AI API failed (${res.statusCode}): ${res.body}'};
     } catch (e) {
       return {'_error': 'AI API request error: $e'};
     }
+  }
+
+  /// True when FastAPI responds (e.g. before scalp analyze).
+  Future<bool> isBackendReachable() async {
+    final status = await getAiStatus();
+    return status != null;
   }
 
   Future<Map<String, dynamic>?> getAiStatus() async {

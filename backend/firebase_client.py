@@ -1,29 +1,29 @@
 """
 Firebase Admin + Firestore for the FastAPI backend.
 
-Credentials (first match wins):
-  1. FIREBASE_SERVICE_ACCOUNT_PATH or GOOGLE_APPLICATION_CREDENTIALS
-  2. backend/.env (loaded automatically if python-dotenv is installed)
-  3. backend/firebase-service-account.json (drop the Firebase private key here)
+Uses the **same** Firebase project as the Flutter app: `safe-hair-274`
+(see `firebase/project.json` and `backend/safe_hair_project.py`).
 
-Use USE_FIREBASE=false to force in-memory-only mode even if credentials exist.
+Credentials (first valid key for safe-hair-274):
+  1. FIREBASE_SERVICE_ACCOUNT_PATH or GOOGLE_APPLICATION_CREDENTIALS
+  2. backend/firebase-service-account-safe-hair-274.json  (recommended)
+  3. backend/firebase-service-account.json  (only if project_id is safe-hair-274)
+
+Keys for other projects (e.g. safehair-f7891) are ignored.
+
+USE_FIREBASE=false → in-memory-only mode.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Optional
 
-_BACKEND_DIR = Path(__file__).resolve().parent
-
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(_BACKEND_DIR / ".env")
-except ImportError:
-    pass
-
-DEFAULT_SERVICE_ACCOUNT_FILE = _BACKEND_DIR / "firebase-service-account.json"
+from safe_hair_project import (
+    FALLBACK_SERVICE_ACCOUNT,
+    PREFERRED_SERVICE_ACCOUNT,
+    PROJECT_ID,
+    resolve_service_account_path,
+)
 
 _firestore_client: Optional[Any] = None
 _init_error: Optional[str] = None
@@ -31,19 +31,6 @@ _init_error: Optional[str] = None
 
 def _use_firebase() -> bool:
     return os.getenv("USE_FIREBASE", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def resolve_service_account_path() -> Optional[str]:
-    """Path to the JSON key file, or None if not found."""
-    path = (
-        os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    )
-    if not path and DEFAULT_SERVICE_ACCOUNT_FILE.is_file():
-        path = str(DEFAULT_SERVICE_ACCOUNT_FILE)
-    if path and os.path.isfile(path):
-        return path
-    return None
 
 
 def get_firestore():
@@ -58,7 +45,10 @@ def get_firestore():
 
     path = resolve_service_account_path()
     if not path:
-        _init_error = "missing_service_account_file"
+        _init_error = (
+            f"missing_service_account_for_{PROJECT_ID}; "
+            f"add {PREFERRED_SERVICE_ACCOUNT.name} from Firebase Console"
+        )
         return None
 
     try:
@@ -76,12 +66,18 @@ def get_firestore():
 
 
 def firebase_status() -> dict:
+    path = resolve_service_account_path()
     ready = get_firestore() is not None
     return {
+        "firebase_project_id": PROJECT_ID,
         "firebase_enabled": _use_firebase(),
         "firestore_ready": ready,
         "init_error": _init_error,
-        "service_account_key_found": resolve_service_account_path() is not None,
-        "default_key_file": "firebase-service-account.json",
-        "default_key_file_present": DEFAULT_SERVICE_ACCOUNT_FILE.is_file(),
+        "service_account_key_found": path is not None,
+        "service_account_path": path,
+        "preferred_key_file": str(PREFERRED_SERVICE_ACCOUNT),
+        "preferred_key_present": PREFERRED_SERVICE_ACCOUNT.is_file(),
+        "fallback_key_file": str(FALLBACK_SERVICE_ACCOUNT),
+        "fallback_key_present": FALLBACK_SERVICE_ACCOUNT.is_file(),
+        "aligned_with_flutter_app": True,
     }

@@ -32,6 +32,7 @@ app = FastAPI(title="Safe Hair API", version="2.0.0")
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_ONNX = os.path.join(_BACKEND_DIR, "models", "scalp_seg.onnx")
 _DEFAULT_JOBLIB = os.path.join(_BACKEND_DIR, "models", "bald_regressor.joblib")
+_DEFAULT_CONDITIONS = os.path.join(_BACKEND_DIR, "models", "scalp_conditions.joblib")
 
 
 def _env_tri_bool(name: str, default: str = "auto") -> str:
@@ -57,6 +58,14 @@ _USE_TRAINED_MODEL = _TRAINED_TOGGLE == "on" or (
     _TRAINED_TOGGLE == "auto" and os.path.isfile(_TRAINED_MODEL_PATH)
 )
 _HAS_TRAINED_MODEL = bool(_USE_TRAINED_MODEL and os.path.isfile(_TRAINED_MODEL_PATH))
+
+_CONDITIONS_TOGGLE = _env_tri_bool("USE_CONDITION_MODEL", "auto")
+_CONDITIONS_MODEL_PATH = os.getenv("CONDITIONS_MODEL_PATH", "").strip() or _DEFAULT_CONDITIONS
+_USE_CONDITION_MODEL = _CONDITIONS_TOGGLE == "on" or (
+    _CONDITIONS_TOGGLE == "auto" and os.path.isfile(_CONDITIONS_MODEL_PATH)
+)
+_HAS_CONDITION_MODEL = bool(_USE_CONDITION_MODEL and os.path.isfile(_CONDITIONS_MODEL_PATH))
+
 _STRICT_AI = os.getenv("STRICT_AI", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
@@ -415,6 +424,10 @@ def ai_status():
         "trained_model_path": _TRAINED_MODEL_PATH,
         "trained_model_loaded": _HAS_TRAINED_MODEL,
         "use_trained_model_env": _TRAINED_TOGGLE,
+        "condition_model_enabled": _USE_CONDITION_MODEL,
+        "condition_model_path": _CONDITIONS_MODEL_PATH,
+        "condition_model_loaded": _HAS_CONDITION_MODEL,
+        "use_condition_model_env": _CONDITIONS_TOGGLE,
         "strict_ai": _STRICT_AI,
     }
 
@@ -435,6 +448,8 @@ def ai_scalp_analyze(request: ScalpAnalysisRequest):
                 cnn_model_path=_CNN_MODEL_PATH,
                 use_trained_model=_HAS_TRAINED_MODEL,
                 trained_model_path=_TRAINED_MODEL_PATH,
+                use_condition_model=_HAS_CONDITION_MODEL,
+                condition_model_path=_CONDITIONS_MODEL_PATH,
                 patient_profile_gender=request.patient_gender,
                 patient_profile_age=request.patient_age,
             )
@@ -460,6 +475,8 @@ async def ai_scalp_analyze_upload(file: UploadFile = File(...)):
                 cnn_model_path=_CNN_MODEL_PATH,
                 use_trained_model=_HAS_TRAINED_MODEL,
                 trained_model_path=_TRAINED_MODEL_PATH,
+                use_condition_model=_HAS_CONDITION_MODEL,
+                condition_model_path=_CONDITIONS_MODEL_PATH,
             )
             if _has_opencv
             else _analyze_scalp_fallback(image_bytes)
@@ -583,6 +600,8 @@ async def v1_reports_upload(
             cnn_model_path=_CNN_MODEL_PATH,
             use_trained_model=_HAS_TRAINED_MODEL,
             trained_model_path=_TRAINED_MODEL_PATH,
+            use_condition_model=_HAS_CONDITION_MODEL,
+            condition_model_path=_CONDITIONS_MODEL_PATH,
             patient_profile_gender=patient_gender,
             patient_profile_age=patient_age,
         )

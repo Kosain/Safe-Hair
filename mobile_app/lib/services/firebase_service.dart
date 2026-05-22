@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -8,7 +9,9 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:http/http.dart' as http;
 
+import '../core/demo_accounts.dart';
 import '../firebase_options.dart';
 
 class FirebaseService {
@@ -176,18 +179,93 @@ class FirebaseService {
   static User? get currentUser => auth.currentUser;
   static Stream<User?> get authStateChanges => auth.authStateChanges();
 
+  /// Re-initialize Firebase if the app started before options were ready (common on web hot restart).
+  static Future<bool> ensureReady() async {
+    if (_initialized) return true;
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+      }
+      markInitialized();
+      return true;
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('duplicate-app') || msg.contains('[core/duplicate-app]')) {
+        markInitialized();
+        return true;
+      }
+      lastInitError = 'Firebase initialization failed: $e';
+      debugPrint(lastInitError);
+      return false;
+    }
+  }
+
+  /// Verifies password against Firebase Auth REST (same project as [DefaultFirebaseOptions]).
+  static Future<bool> _restEmailPasswordOk(String email, String password) async {
+    try {
+      final apiKey = DefaultFirebaseOptions.currentPlatform.apiKey;
+      final uri = Uri.parse(
+        'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$apiKey',
+      );
+      final resp = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'email': email,
+              'password': password,
+              'returnSecureToken': true,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+      return resp.statusCode == 200;
+    } catch (e) {
+      debugPrint('_restEmailPasswordOk: $e');
+      return false;
+    }
+  }
+
   static Future<UserCredential?> signInWithEmail(String email, String password) async {
     lastAuthError = null;
-    if (!_initialized) {
+    if (!await ensureReady()) {
       lastAuthError = lastInitError ?? 'Firebase is not initialized on this app build.';
       return null;
     }
+    final loginEmail = email.trim();
     try {
-      return await auth.signInWithEmailAndPassword(email: email, password: password);
+      return await auth.signInWithEmailAndPassword(email: loginEmail, password: password);
     } on FirebaseAuthException catch (e) {
       debugPrint('Firebase signInWithEmail error: code=${e.code} message=${e.message}');
-      if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
-        lastAuthError = 'Invalid email or password.';
+      // Web SDK sometimes fails while REST accepts the same demo password — retry once.
+      if (e.code == 'invalid-credential' ||
+          e.code == 'wrong-password' ||
+          e.code == 'user-not-found') {
+        final restOk = await _restEmailPasswordOk(loginEmail, password);
+        if (restOk) {
+          try {
+            await auth.signOut();
+          } catch (_) {}
+          try {
+            return await auth.signInWithEmailAndPassword(email: loginEmail, password: password);
+          } on FirebaseAuthException catch (e2) {
+            debugPrint('signIn retry after REST ok: ${e2.code} ${e2.message}');
+          }
+          try {
+            final cred = EmailAuthProvider.credential(email: loginEmail, password: password);
+            return await auth.signInWithCredential(cred);
+          } on FirebaseAuthException catch (e3) {
+            debugPrint('signInWithCredential retry: ${e3.code} ${e3.message}');
+          }
+          lastAuthError =
+              'Password is correct in Firebase but the app could not start a session. '
+              'In Firebase Console → Authentication → Settings, add `localhost` and `127.0.0.1` under Authorized domains, '
+              'then fully restart the app (not hot reload).';
+          return null;
+        }
+        lastAuthError =
+            'Invalid email or password. Demo accounts (case-sensitive): '
+            'Patient $loginEmail / ${DemoAccounts.patientPassword} — '
+            'Dr. Ayesha ${DemoAccounts.doctorRows.first.email} / ${DemoAccounts.doctorRows.first.password}';
       } else if (e.code == 'invalid-email') {
         lastAuthError = 'Please enter a valid email address.';
       } else if (e.code == 'user-disabled') {
@@ -317,9 +395,86 @@ class FirebaseService {
     if (!_initialized) return null;
     try {
       final doc = await firestore.collection('doctors').doc(userId).get();
-      return doc.data();
-    } catch (_) {}
+      if (doc.exists && doc.data() != null) {
+        return doc.data();
+      }
+      // Legacy rows: document id ≠ Auth uid (re-seed or manual Console entry).
+      final email = auth.currentUser?.email?.trim();
+      if (email != null && email.isNotEmpty) {
+        final byEmail = await firestore
+            .collection('doctors')
+            .where('email', isEqualTo: email)
+            .limit(1)
+            .get();
+        if (byEmail.docs.isNotEmpty) {
+          final legacy = byEmail.docs.first;
+          final data = Map<String, dynamic>.from(legacy.data());
+          data['userId'] = userId;
+          await firestore.collection('doctors').doc(userId).set(
+            {
+              ...data,
+              'email': email,
+              'profileCompleted': data['profileCompleted'] ?? true,
+            },
+            SetOptions(merge: true),
+          );
+          return data;
+        }
+      }
+    } catch (e, st) {
+      debugPrint('getDoctorProfile: $e\n$st');
+    }
     return null;
+  }
+
+  /// Ensures `doctors/{uid}` exists for demo / returning doctors (FYP logins).
+  static Future<bool> ensureDoctorProfileIfMissing({
+    required String uid,
+    required String email,
+    String? displayName,
+  }) async {
+    if (!_initialized || uid.isEmpty) return false;
+    final meta = DemoAccounts.doctorMeta(email);
+    try {
+      final existing = await firestore.collection('doctors').doc(uid).get();
+      if (existing.exists) {
+        await firestore.collection('doctors').doc(uid).set(
+          {'profileCompleted': true, 'userId': uid, 'email': email.trim()},
+          SetOptions(merge: true),
+        );
+        return true;
+      }
+      final byEmail = await firestore
+          .collection('doctors')
+          .where('email', isEqualTo: email.trim())
+          .limit(1)
+          .get();
+      if (byEmail.docs.isNotEmpty) {
+        final data = Map<String, dynamic>.from(byEmail.docs.first.data());
+        data['userId'] = uid;
+        data['email'] = email.trim();
+        data['profileCompleted'] = true;
+        await firestore.collection('doctors').doc(uid).set(data, SetOptions(merge: true));
+        return true;
+      }
+      if (meta == null) return false;
+      await firestore.collection('doctors').doc(uid).set({
+        'userId': uid,
+        'role': 'doctor',
+        'email': email.trim(),
+        'fullName': meta.fullName,
+        'clinicName': 'Safe Hair Clinic',
+        'city': 'Lahore',
+        'consultationFee': 3000,
+        'profileCompleted': true,
+        'licenseNumber': 'DEMO-$uid',
+        'updatedAt': DateTime.now().toIso8601String(),
+      }, SetOptions(merge: true));
+      return true;
+    } catch (e, st) {
+      debugPrint('ensureDoctorProfileIfMissing: $e\n$st');
+      return false;
+    }
   }
 
   /// New Firestore document id for `doctors/{id}` without writing a document yet.
@@ -372,7 +527,11 @@ class FirebaseService {
       final rows = snap.docs.map(_doctorRowFromDoc).toList();
       _sortDoctorRowsForPicker(rows);
       return rows;
-    } catch (_) {}
+    } on FirebaseException catch (e) {
+      debugPrint('getVerifiedDoctorsOnce: ${e.code} ${e.message}');
+    } catch (e, st) {
+      debugPrint('getVerifiedDoctorsOnce: $e\n$st');
+    }
     return [];
   }
 
@@ -388,23 +547,89 @@ class FirebaseService {
     });
   }
 
+  /// Doctors this patient has booked before (when `doctors` collection is empty).
+  static Future<List<Map<String, dynamic>>> getBookableDoctorsFromAppointmentHistory(String userId) async {
+    if (!_initialized || userId.isEmpty) return [];
+    try {
+      final snap = await firestore.collection('appointments').where('userId', isEqualTo: userId).limit(50).get();
+      final byId = <String, Map<String, dynamic>>{};
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        final id = (d['doctorId'] ?? d['doctor_id'] ?? '').toString().trim();
+        if (id.isEmpty) continue;
+        byId.putIfAbsent(
+          id,
+          () => {
+            'id': id,
+            'fullName': (d['doctorName'] ?? d['doctor_name'] ?? 'Doctor').toString(),
+            'clinicName': (d['clinicName'] ?? d['clinic_name'] ?? 'Clinic').toString(),
+            'city': (d['city'] ?? '').toString(),
+            'consultationFee': d['consultationFee'] ?? d['consultation_fee'] ?? 0,
+            'rating': 4.5,
+          },
+        );
+      }
+      final rows = byId.values.toList();
+      _sortDoctorRowsForPicker(rows);
+      return rows;
+    } catch (e, st) {
+      debugPrint('getBookableDoctorsFromAppointmentHistory: $e\n$st');
+    }
+    return [];
+  }
+
   /// For patient booking UIs. Uses verified doctors first; if none, any `doctors/{uid}` so [id] is always a real
   /// Firebase uid — never placeholder strings like `d1` or `1`, which would make the doctor dashboard query empty.
-  static Future<List<Map<String, dynamic>>> getDoctorsForPatientBookingOnce() async {
+  static Future<List<Map<String, dynamic>>> getDoctorsForPatientBookingOnce({String? patientUserId}) async {
     if (!_initialized) return [];
     try {
       final verified = await getVerifiedDoctorsOnce();
       if (verified.isNotEmpty) return verified;
 
       final snap = await firestore.collection('doctors').limit(100).get();
-      if (snap.docs.isEmpty) return [];
-      final rows = snap.docs.map(_doctorRowFromDoc).toList();
-      _sortDoctorRowsForPicker(rows);
-      return rows;
+      if (snap.docs.isNotEmpty) {
+        final rows = snap.docs.map(_doctorRowFromDoc).toList();
+        _sortDoctorRowsForPicker(rows);
+        return rows;
+      }
+
+      if (patientUserId != null && patientUserId.isNotEmpty) {
+        final fromHistory = await getBookableDoctorsFromAppointmentHistory(patientUserId);
+        if (fromHistory.isNotEmpty) return fromHistory;
+      }
+    } on FirebaseException catch (e) {
+      debugPrint('getDoctorsForPatientBookingOnce: ${e.code} ${e.message}');
+      if (e.code == 'permission-denied' && patientUserId != null && patientUserId.isNotEmpty) {
+        return getBookableDoctorsFromAppointmentHistory(patientUserId);
+      }
     } catch (e, st) {
       debugPrint('getDoctorsForPatientBookingOnce: $e\n$st');
     }
     return [];
+  }
+
+  /// Firestore documents must stay under ~1 MiB. Full scalp JPEGs as base64 exceed that on web.
+  static Map<String, dynamic> slimReportPayloadForFirestore(Map<String, dynamic> payload) {
+    const heavyKeys = {
+      'sourceImageBase64',
+      'analyzedImageBase64',
+      'scalpImageBase64',
+      'imageBase64',
+      'overlay_image_base64',
+      'overlayImageBase64',
+    };
+    final out = <String, dynamic>{};
+    payload.forEach((k, v) {
+      if (heavyKeys.contains(k)) return;
+      if (k.endsWith('Base64') || k.endsWith('_base64')) return;
+      out[k] = v;
+    });
+    final hasUrl = (out['scalpImageUrl'] ?? out['pdfUrl'] ?? '').toString().isNotEmpty;
+    if (!hasUrl) {
+      out['imagesStoredInStorage'] = false;
+      out['note'] = 'Scalp photos are not stored in Firestore on localhost web; re-run scan to view overlay in-session.';
+    }
+    return out;
   }
 
   static Future<bool> isAppointmentSlotBooked({
@@ -754,6 +979,40 @@ class FirebaseService {
     }
   }
 
+  /// Creates `patient_details/{uid}` when missing so returning patients reach the dashboard.
+  static Future<bool> ensurePatientProfileIfMissing({
+    required String uid,
+    required String email,
+    String? displayName,
+  }) async {
+    if (!_initialized || uid.isEmpty) return false;
+    try {
+      final existing = await firestore.collection('patient_details').doc(uid).get();
+      if (existing.exists) return true;
+
+      final snap = await firestore
+          .collection('patient_details')
+          .where('userId', isEqualTo: uid)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) return true;
+
+      final name = (displayName ?? email.split('@').first).trim();
+      await firestore.collection('patient_details').doc(uid).set({
+        'userId': uid,
+        'user_id': uid,
+        'email': email.trim(),
+        'name': name.isEmpty ? 'Patient' : name,
+        'profileCompleted': true,
+        'updatedAt': DateTime.now().toIso8601String(),
+      }, SetOptions(merge: true));
+      return true;
+    } catch (e, st) {
+      debugPrint('ensurePatientProfileIfMissing: $e\n$st');
+      return false;
+    }
+  }
+
   static Future<DocumentSnapshot<Map<String, dynamic>>?> getPatientDetails(String userId) async {
     if (!_initialized) return null;
     try {
@@ -768,7 +1027,9 @@ class FirebaseService {
           .limit(1)
           .get();
       return snap.docs.isNotEmpty ? snap.docs.first : null;
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('getPatientDetails: $e\n$st');
+    }
     return null;
   }
 
@@ -961,6 +1222,8 @@ class FirebaseService {
     }
   }
 
+  static String? lastHairAnalysisSaveError;
+
   /// Persists latest metrics on [patient_details], appends [hair_scans], adds [reports] doc (batch).
   static Future<bool> saveHairAnalysisSession({
     required String userId,
@@ -971,8 +1234,13 @@ class FirebaseService {
     required String reportDocId,
     required Map<String, dynamic> reportPayload,
   }) async {
-    if (!_initialized) return false;
+    if (!_initialized) {
+      lastHairAnalysisSaveError = 'Firebase is not initialized.';
+      return false;
+    }
+    lastHairAnalysisSaveError = null;
     try {
+      final slimPayload = slimReportPayloadForFirestore(reportPayload);
       final avg = hairHealthAverageScore(strength, scalp, damage, fall);
       final patientRef = firestore.collection('patient_details').doc(userId);
       final scanRef = patientRef.collection('hair_scans').doc();
@@ -1014,7 +1282,7 @@ class FirebaseService {
         'reportId': reportDocId,
       });
       batch.set(reportRef, {
-        ...reportPayload,
+        ...slimPayload,
         'userId': userId,
         'reportId': reportDocId,
         'createdAt': FieldValue.serverTimestamp(),
@@ -1026,7 +1294,12 @@ class FirebaseService {
       });
       await batch.commit();
       return true;
+    } on FirebaseException catch (e, st) {
+      lastHairAnalysisSaveError = '${e.code}: ${e.message ?? "Firestore save failed"}';
+      debugPrint('saveHairAnalysisSession: $lastHairAnalysisSaveError\n$st');
+      return false;
     } catch (e, st) {
+      lastHairAnalysisSaveError = e.toString();
       debugPrint('saveHairAnalysisSession: $e\n$st');
       return false;
     }

@@ -54,7 +54,8 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
     }
     setState(() => _loadingDoctors = true);
     try {
-      final rows = await FirebaseService.getDoctorsForPatientBookingOnce();
+      final uid = context.read<AuthProvider>().userId;
+      final rows = await FirebaseService.getDoctorsForPatientBookingOnce(patientUserId: uid);
       if (!mounted) return;
       final mapped = <_BookableDoctor>[];
       for (final r in rows) {
@@ -84,7 +85,16 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
         _bookable = mapped;
         _loadingDoctors = false;
       });
-    } catch (_) {
+    } on FirebaseException catch (e) {
+      debugPrint('_loadBookableDoctors: ${e.code} ${e.message}');
+      if (mounted) {
+        setState(() {
+          _bookable = const [];
+          _loadingDoctors = false;
+        });
+      }
+    } catch (e, st) {
+      debugPrint('_loadBookableDoctors: $e\n$st');
       if (mounted) {
         setState(() {
           _bookable = const [];
@@ -135,7 +145,19 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Book a doctor', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text('Book a doctor', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                          ),
+                          if (canStream)
+                            TextButton.icon(
+                              onPressed: _loadingDoctors ? null : _loadBookableDoctors,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Refresh'),
+                            ),
+                        ],
+                      ),
                       const SizedBox(height: 6),
                       Text(
                         canStream
@@ -154,7 +176,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                           padding: const EdgeInsets.symmetric(vertical: 20),
                           child: Text(
                             canStream
-                                ? 'No doctors found in Firebase yet. Add doctor accounts under the doctors collection (or complete doctor registration with profile completed), then refresh this page.'
+                                ? 'No bookable doctors in Firebase `doctors` yet. Run: py backend\\scripts\\seed_demo_doctors.py — then tap Refresh. (Doctors from your past appointments may appear after the next app update if the list was empty.)'
                                 : 'Enable Firebase and sign in to load doctors you can book.',
                             style: TextStyle(fontSize: 13, color: Colors.grey.shade700, height: 1.4),
                           ),
@@ -294,7 +316,14 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
             stream: FirebaseService.getAppointments(userId),
             builder: (context, snap) {
               if (snap.hasError) {
-                return Text('Could not load appointments.', style: TextStyle(color: Colors.red.shade700, fontSize: 13));
+                final err = snap.error.toString();
+                final extra = err.contains('permission-denied')
+                    ? ' Publish Firestore rules: firebase deploy --only firestore:rules'
+                    : '';
+                return Text(
+                  'Could not load appointments.$extra',
+                  style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+                );
               }
               if (!snap.hasData) {
                 return const Padding(

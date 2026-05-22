@@ -29,7 +29,21 @@ class PatientMyReportScreen extends StatelessWidget {
         stream: FirebaseService.patientPdfReportsStream(uid),
         builder: (context, snap) {
           if (snap.hasError) {
-            return Center(child: Text('Error loading reports: ${snap.error}'));
+            final err = snap.error.toString();
+            final hint = err.contains('permission-denied')
+                ? '\n\nFirestore rules are not published for safe-hair-274. '
+                    'From mobile_app folder run: firebase deploy --only firestore:rules'
+                : '';
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Error loading reports: $err$hint',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.red.shade800, fontSize: 13),
+                ),
+              ),
+            );
           }
           if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
             return const Center(

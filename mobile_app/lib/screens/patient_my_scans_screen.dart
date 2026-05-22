@@ -246,9 +246,13 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
       if (!mounted) return;
       if (!ok) {
         setState(() => _analyzing = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not save analysis. Check connection and try again.')),
-        );
+        final detail = FirebaseService.lastHairAnalysisSaveError;
+        final msg = detail != null && detail.contains('permission-denied')
+            ? 'Could not save: Firestore rules blocked write. In Firebase Console publish rules from firebase/firestore.rules.'
+            : (detail != null && detail.isNotEmpty)
+                ? 'Could not save analysis: $detail'
+                : 'Could not save analysis. Check Firebase connection and try again.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
         return;
       }
 

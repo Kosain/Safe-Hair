@@ -30,20 +30,13 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from firebase_client import resolve_service_account_path  # noqa: E402
+from safe_hair_project import (  # noqa: E402
+    PROJECT_ID,
+    PREFERRED_SERVICE_ACCOUNT,
+    ensure_firebase_admin_app,
+)
 
-# Prefer an explicit key for the Flutter app project so `firebase-service-account.json`
-# can stay pointing at another backend project if needed.
-_PREFERRED_SAFE_HAIR_KEY = _BACKEND / "firebase-service-account-safe-hair-274.json"
-
-
-def _seed_service_account_path() -> str | None:
-    if _PREFERRED_SAFE_HAIR_KEY.is_file():
-        return str(_PREFERRED_SAFE_HAIR_KEY)
-    return resolve_service_account_path()
-
-import firebase_admin  # noqa: E402
-from firebase_admin import auth, credentials, firestore  # noqa: E402
+from firebase_admin import auth, firestore  # noqa: E402
 
 
 def _utc_iso() -> str:
@@ -90,40 +83,6 @@ DOCTORS: list[dict] = [
 ]
 
 
-# Must match `projectId` in mobile_app/lib/firebase_options.dart (what the app logs into).
-_FLUTTER_APP_FIREBASE_PROJECT = "safe-hair-274"
-
-
-def _ensure_app() -> None:
-    path = _seed_service_account_path()
-    if not path:
-        print("No service account JSON found.", file=sys.stderr)
-        print(f"  Download a key from Firebase project **{_FLUTTER_APP_FIREBASE_PROJECT}** and save as:", file=sys.stderr)
-        print(f"    {_PREFERRED_SAFE_HAIR_KEY}", file=sys.stderr)
-        print("  Or set FIREBASE_SERVICE_ACCOUNT_PATH to that file.", file=sys.stderr)
-        sys.exit(1)
-    try:
-        with open(path, encoding="utf-8") as f:
-            sa_project = json.load(f).get("project_id", "")
-    except OSError as e:
-        print(f"Could not read service account file: {e}", file=sys.stderr)
-        sys.exit(1)
-    if sa_project and sa_project != _FLUTTER_APP_FIREBASE_PROJECT:
-        print(
-            "\n*** STOP: wrong Firebase project in this JSON ***\n"
-            f"  This file's project_id: {sa_project}\n"
-            f"  Flutter app expects:    {_FLUTTER_APP_FIREBASE_PROJECT}\n\n"
-            "  Fix: Firebase Console → that project → Project settings → Service accounts →\n"
-            "  Generate new private key → save as:\n"
-            f"    {_PREFERRED_SAFE_HAIR_KEY}\n"
-            "  Then run this script again.\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(credentials.Certificate(path))
-
-
 def _upsert_auth_user(email: str, password: str, display_name: str) -> tuple[str, bool]:
     try:
         u = auth.get_user_by_email(email)
@@ -167,17 +126,16 @@ def _firestore_doc(uid: str, row: dict) -> dict:
 
 
 def main() -> None:
-    _ensure_app()
+    path = ensure_firebase_admin_app()
     db = firestore.client()
-    path = _seed_service_account_path() or ""
     sa_pid = ""
     try:
         with open(path, encoding="utf-8") as f:
             sa_pid = json.load(f).get("project_id", "")
     except OSError:
         pass
-    print(f"Firebase Admin project (service account): {sa_pid or '(unknown)'}")
-    print(f"Flutter app must use the same project (see firebase_options.dart): {_FLUTTER_APP_FIREBASE_PROJECT}\n")
+    print(f"Firebase Admin project (service account): {sa_pid or PROJECT_ID}")
+    print(f"Flutter app + backend use: {PROJECT_ID} (see firebase/project.json)\n")
     print("Seeding demo doctors (Auth + Firestore doctors/{uid})...\n")
     lines = ["| Doctor | Email | Password | Firestore doc |", "| --- | --- | --- | --- |"]
     for row in DOCTORS:

@@ -1,4 +1,5 @@
-// Firebase options for Safe Hair project (safe-hair-274)
+// Firebase options for Safe Hair — project safe-hair-274
+// Keep in sync with: firebase/project.json and backend/safe_hair_project.py
 
 import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;

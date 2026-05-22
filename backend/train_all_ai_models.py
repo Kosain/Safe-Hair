@@ -2,7 +2,8 @@
 Train all bundled AI assets for the scalp analyzer (one command).
 
 1) RandomForest bald-ratio regressor -> models/bald_regressor.joblib
-2) U-Net segmentation + ONNX -> models/scalp_seg.onnx
+2) Multi-label scalp conditions (Alopecia, Dandruff, Fungal, Dry) -> models/scalp_conditions.joblib
+3) U-Net segmentation + ONNX -> models/scalp_seg.onnx
    - Prefers TensorFlow if installed (Python 3.10–3.12 typical).
    - Otherwise uses PyTorch (e.g. Python 3.14).
 
@@ -56,7 +57,7 @@ def main() -> None:
         raise SystemExit(f"Dataset folder not found: {ds}")
 
     reg_out = models / "bald_regressor.joblib"
-    print("=== (1/3) Training bald-ratio regressor ===")
+    print("=== (1/4) Training bald-ratio regressor ===")
     subprocess.run(
         [
             sys.executable,
@@ -73,12 +74,28 @@ def main() -> None:
         env=sub_env,
     )
 
+    cond_out = models / "scalp_conditions.joblib"
+    print("=== (2/4) Training scalp condition classifier ===")
+    subprocess.run(
+        [
+            sys.executable,
+            str(here / "train_scalp_conditions.py"),
+            "--dataset",
+            str(ds),
+            "--output",
+            str(cond_out),
+        ],
+        check=True,
+        cwd=str(here),
+        env=sub_env,
+    )
+
     if args.skip_seg:
         print("Skipping segmentation (--skip-seg).")
         return
 
     onnx_out = models / "scalp_seg.onnx"
-    print("=== (2/3) Training scalp segmentation (U-Net) ===")
+    print("=== (3/4) Training scalp segmentation (U-Net) ===")
     if _have_tensorflow():
         keras_out = models / "scalp_segmentation.keras"
         subprocess.run(
@@ -99,7 +116,7 @@ def main() -> None:
             env=sub_env,
         )
         if not args.skip_export:
-            print("=== (3/3) Export ONNX (tf2onnx) ===")
+            print("=== (4/4) Export ONNX (tf2onnx) ===")
             subprocess.run(
                 [
                     sys.executable,
