@@ -416,13 +416,21 @@ def _frontal_temple_scalp_masks(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.nda
     return combined, mask_hair, outline_contours
 
 
-def _head_roi_mask(h: int, w: int) -> np.ndarray:
+def _head_roi_mask(
+    h: int,
+    w: int,
+    *,
+    center: Optional[Tuple[int, int]] = None,
+    axes: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
     """Elliptical ROI approximating the scalp region in a top-down photo."""
+    cx, cy = center if center is not None else (w // 2, int(h * 0.48))
+    ax, ay = axes if axes is not None else (int(w * 0.40), int(h * 0.42))
     head_roi = np.zeros((h, w), dtype=np.uint8)
     cv2.ellipse(
         head_roi,
-        center=(w // 2, int(h * 0.48)),
-        axes=(int(w * 0.40), int(h * 0.42)),
+        center=(int(cx), int(cy)),
+        axes=(int(ax), int(ay)),
         angle=0,
         startAngle=0,
         endAngle=360,
@@ -430,6 +438,87 @@ def _head_roi_mask(h: int, w: int) -> np.ndarray:
         thickness=-1,
     )
     return head_roi
+
+
+def _environment_background_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Desk selfies / clinic room: monitor, walls, desk — not scalp.
+    Returns uint8 mask 255 = exclude from AI.
+    """
+    h, w = img_bgr.shape[:2]
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    bright_ui = ((gray > 168) & (sat < 50)).astype(np.uint8) * 255
+    desk_gray = ((gray > 35) & (gray < 130) & (sat < 38)).astype(np.uint8) * 255
+    top_env = np.zeros((h, w), dtype=np.uint8)
+    top_env[: max(1, int(h * 0.30)), :] = 255
+    top_env = cv2.bitwise_and(top_env, bright_ui)
+    env = cv2.bitwise_or(cv2.bitwise_or(bright_ui, desk_gray), top_env)
+    env = cv2.bitwise_or(env, _colored_background_mask(img_bgr))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    env = cv2.dilate(env, k, iterations=1)
+    return env
+
+
+def _detect_scalp_head_mask(img_bgr: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int]]:
+    """
+    Locate the head in the frame using hair + scalp color (works for clinic drape OR desk selfies).
+    Returns (head_mask_uint8, (cx, cy), (axis_x, axis_y)).
+    """
+    h, w = img_bgr.shape[:2]
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    env = _environment_background_mask(img_bgr)
+
+    hair = ((gray < 118) & (sat < 130)).astype(np.uint8) * 255
+    skin = ((sat < 92) & (gray > 72) & (gray < 215)).astype(np.uint8) * 255
+    candidate = cv2.bitwise_or(hair, skin)
+    candidate = cv2.bitwise_and(candidate, cv2.bitwise_not(env))
+
+    k15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, k15)
+    candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, k15)
+
+    frame_area = float(h * w)
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(candidate, connectivity=8)
+    best_lbl = -1
+    best_score = -1e18
+    for lbl in range(1, n_labels):
+        area = float(stats[lbl, cv2.CC_STAT_AREA])
+        if area < frame_area * 0.05 or area > frame_area * 0.65:
+            continue
+        bw = float(stats[lbl, cv2.CC_STAT_WIDTH])
+        bh = float(stats[lbl, cv2.CC_STAT_HEIGHT])
+        if bw < 1 or bh < 1:
+            continue
+        aspect = bw / bh
+        if aspect < 0.42 or aspect > 2.05:
+            continue
+        cx, cy = float(centroids[lbl][0]), float(centroids[lbl][1])
+        center_pen = abs(cx - w * 0.5) * 3.5
+        top_pen = max(0.0, (h * 0.28 - cy)) * 12.0
+        score = area - center_pen - top_pen
+        if score > best_score:
+            best_score = score
+            best_lbl = lbl
+
+    if best_lbl < 0:
+        cx, cy = w // 2, int(h * 0.48)
+        return _head_roi_mask(h, w, center=(cx, cy)), (cx, cy), (int(w * 0.40), int(h * 0.42))
+
+    head = (labels == best_lbl).astype(np.uint8) * 255
+    x, y, bw, bh, _ = stats[best_lbl]
+    cx = int(x + bw * 0.5)
+    cy = int(y + bh * 0.5)
+    ax = int(max(w * 0.22, min(w * 0.48, bw * 0.58)))
+    ay = int(max(h * 0.20, min(h * 0.50, bh * 0.58)))
+    head = cv2.dilate(head, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)), iterations=2)
+    ellipse = _head_roi_mask(h, w, center=(cx, cy), axes=(ax, ay))
+    head = cv2.bitwise_and(head, ellipse)
+    return head, (cx, cy), (ax, ay)
 
 
 def _colored_background_mask(img_bgr: np.ndarray) -> np.ndarray:
@@ -475,7 +564,9 @@ def _crown_topdown_layout(img_bgr: np.ndarray) -> bool:
         gray[int(h * 0.72) : h, int(w * 0.65) : w],
     ]
     corner_mean = float(np.mean(np.concatenate([p.ravel() for p in patches if p.size > 0])))
-    head = _head_roi_mask(h, w) > 0
+    head_det, (dcx, dcy), _ = _detect_scalp_head_mask(img_bgr)
+    head = head_det > 0
+    cx, cy = dcx, int(dcy * 0.98)
     hairish = (gray < center_mean + 22) & head
     hair_frac = float(np.sum(hairish)) / (float(np.sum(head)) + 1e-6)
     if center_mean + 6.0 < corner_mean and hair_frac > 0.07:
@@ -484,17 +575,20 @@ def _crown_topdown_layout(img_bgr: np.ndarray) -> bool:
     gray_u8 = gray.astype(np.uint8)
     scalp_like = (gray_u8 > 95) & (gray_u8 < 200) & head
     center_roi = np.zeros((h, w), dtype=np.uint8)
-    cv2.ellipse(center_roi, (cx, cy), (int(w * 0.22), int(h * 0.20)), 0, 0, 360, 255, -1)
+    cv2.ellipse(center_roi, (cx, cy), (int(w * 0.20), int(h * 0.18)), 0, 0, 360, 255, -1)
+    center_roi = cv2.bitwise_and(center_roi, head_det)
     scalp_frac = float(np.sum(scalp_like & (center_roi > 0))) / (float(np.sum(center_roi > 0)) + 1e-6)
     return scalp_frac > 0.14
 
 
 def _vertex_analysis_keep_mask(img_bgr: np.ndarray) -> np.ndarray:
-    """Where vertex/top overlays and CNN masks are allowed."""
+    """Where vertex/top overlays and CNN masks are allowed (detected head, not frame center)."""
     h, w = img_bgr.shape[:2]
-    roi = cv2.bitwise_and(_head_roi_mask(h, w), _vertex_keyhole_mask(h, w))
-    bg = _colored_background_mask(img_bgr)
-    return cv2.bitwise_and(roi, cv2.bitwise_not(bg))
+    head_mask, center, _axes = _detect_scalp_head_mask(img_bgr)
+    keyhole = _vertex_keyhole_mask(h, w, center=center)
+    roi = cv2.bitwise_and(head_mask, keyhole)
+    env = _environment_background_mask(img_bgr)
+    return cv2.bitwise_and(roi, cv2.bitwise_not(env))
 
 
 def _contour_mostly_inside_zone(contour: np.ndarray, zone: np.ndarray, min_ratio: float = 0.68) -> bool:
@@ -509,12 +603,12 @@ def _contour_mostly_inside_zone(contour: np.ndarray, zone: np.ndarray, min_ratio
 
 
 def _scalp_tissue_mask(img_bgr: np.ndarray, zone: np.ndarray) -> np.ndarray:
-    """Hair + visible scalp skin on the head — excludes blue/green drape and frame edges."""
+    """Hair + visible scalp skin on the head — excludes drape, desk, and monitor."""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
-    not_bg = cv2.bitwise_not(_colored_background_mask(img_bgr))
+    not_bg = cv2.bitwise_not(_environment_background_mask(img_bgr))
     skin = ((sat < 90) & (val > 55) & (val < 218)).astype(np.uint8) * 255
     hair = ((gray < 98) | ((gray < 125) & (sat < 75))).astype(np.uint8) * 255
     tissue = cv2.bitwise_or(skin, hair)
@@ -536,6 +630,18 @@ def _contour_centroid_on_background(contour: np.ndarray, bg_mask: np.ndarray) ->
     cx = max(0, min(w - 1, cx))
     cy = max(0, min(h - 1, cy))
     return bg_mask[cy, cx] > 0
+
+
+def _contour_centroid_inside_mask(contour: np.ndarray, mask: np.ndarray) -> bool:
+    m = cv2.moments(contour)
+    if m["m00"] <= 0:
+        return False
+    cx = int(m["m10"] / m["m00"])
+    cy = int(m["m01"] / m["m00"])
+    h, w = mask.shape[:2]
+    cx = max(0, min(w - 1, cx))
+    cy = max(0, min(h - 1, cy))
+    return mask[cy, cx] > 0
 
 
 def _extract_region_components(
@@ -586,14 +692,21 @@ def _extract_region_components(
     return out
 
 
-def _vertex_keyhole_mask(h: int, w: int) -> np.ndarray:
+def _vertex_keyhole_mask(
+    h: int,
+    w: int,
+    *,
+    center: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
     """
     Clinical-style ROI: narrow toward the front (bottom of frame), widening over the crown — keyhole / flask shape.
     """
+    cx, cy_top = (w // 2, int(h * 0.36)) if center is None else (int(center[0]), int(center[1] - h * 0.10))
+    cy_top = max(int(h * 0.22), min(int(h * 0.52), cy_top))
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.ellipse(
         mask,
-        center=(w // 2, int(h * 0.36)),
+        center=(cx, cy_top),
         axes=(int(w * 0.37), int(h * 0.34)),
         angle=0,
         startAngle=0,
@@ -601,15 +714,15 @@ def _vertex_keyhole_mask(h: int, w: int) -> np.ndarray:
         color=255,
         thickness=-1,
     )
-    # Neck toward anterior hairline (image bottom)
-    neck_w0, neck_w1 = int(w * 0.43), int(w * 0.57)
-    neck_top = int(h * 0.58)
+    # Neck toward anterior hairline (image bottom), anchored under detected crown center.
+    neck_w0, neck_w1 = int(cx - w * 0.07), int(cx + w * 0.07)
+    neck_top = min(h - 4, int(cy_top + h * 0.22))
     pts = np.array(
         [
             [neck_w0, h - 2],
             [neck_w1, h - 2],
-            [int(w * 0.54), neck_top],
-            [int(w * 0.46), neck_top],
+            [int(cx + w * 0.04), neck_top],
+            [int(cx - w * 0.04), neck_top],
         ],
         dtype=np.int32,
     )
@@ -852,20 +965,30 @@ def _draw_zone_outlines(
     fill_alpha: float = 0.0,
     zone: Optional[np.ndarray] = None,
     bg_mask: Optional[np.ndarray] = None,
+    head_mask: Optional[np.ndarray] = None,
+    head_center: Optional[Tuple[int, int]] = None,
 ) -> None:
     """Thin closed outlines on scalp only — professional markup, no filled washes."""
     h, w = overlay_bgr.shape[:2]
     work = mask.copy()
+    if head_mask is not None:
+        work = cv2.bitwise_and(work, head_mask)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, k)
     contours, _ = cv2.findContours(work, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    center = np.array([w * 0.5, h * 0.44], dtype=np.float32)
+    if head_center is not None:
+        center = np.array([float(head_center[0]), float(head_center[1])], dtype=np.float32)
+    else:
+        center = np.array([w * 0.5, h * 0.44], dtype=np.float32)
     ranked: List[Tuple[float, np.ndarray]] = []
     for c in contours:
         area = float(cv2.contourArea(c))
         if area < min_area:
             continue
-        if zone is not None and not _contour_mostly_inside_zone(c, zone, min_ratio=0.72):
+        inside_ref = head_mask if head_mask is not None else zone
+        if inside_ref is not None and not _contour_mostly_inside_zone(c, inside_ref, min_ratio=0.82):
+            continue
+        if head_mask is not None and not _contour_centroid_inside_mask(c, head_mask):
             continue
         if bg_mask is not None and _contour_centroid_on_background(c, bg_mask):
             continue
@@ -909,15 +1032,18 @@ def _draw_clinical_scalp_overlay(
       Yellow = dandruff/irritation only with strong evidence (usually none on clean scalp)
     """
     drawn = {"red": False, "teal": False, "orange": False}
-    keyhole = _vertex_keyhole_mask(h, w)
-    zone = cv2.bitwise_and(keep_zone, keyhole) if keep_zone.shape == keyhole.shape else keep_zone
-    tissue = _scalp_tissue_mask(img_bgr, zone)
-    bg = _colored_background_mask(img_bgr)
-    zone = cv2.bitwise_and(zone, tissue)
-    bald_k = cv2.bitwise_and(bald_mask, zone)
-    thin_k = cv2.bitwise_and(thin_mask, zone)
+    head_mask, head_center, _head_axes = _detect_scalp_head_mask(img_bgr)
+    keyhole = _vertex_keyhole_mask(h, w, center=head_center)
+    analysis_zone = cv2.bitwise_and(keep_zone, keyhole)
+    analysis_zone = cv2.bitwise_and(analysis_zone, head_mask)
+    tissue = _scalp_tissue_mask(img_bgr, analysis_zone)
+    bg = _environment_background_mask(img_bgr)
+    bald_k = cv2.bitwise_and(bald_mask, analysis_zone)
+    thin_k = cv2.bitwise_and(thin_mask, analysis_zone)
 
-    severe_k, mild_k = _severity_zone_masks(prob, bald_k, thin_k, zone)
+    severe_k, mild_k = _severity_zone_masks(prob, bald_k, thin_k, analysis_zone)
+    severe_k = cv2.bitwise_and(severe_k, head_mask)
+    mild_k = cv2.bitwise_and(mild_k, head_mask)
 
     teal_bgr = (170, 210, 80)
     yellow_bgr = (0, 200, 255)
@@ -933,8 +1059,10 @@ def _draw_clinical_scalp_overlay(
             line_thickness=line_thin,
             min_area=140.0,
             max_regions=5,
-            zone=zone,
+            zone=analysis_zone,
             bg_mask=bg,
+            head_mask=head_mask,
+            head_center=head_center,
         )
         drawn["teal"] = True
 
@@ -947,13 +1075,15 @@ def _draw_clinical_scalp_overlay(
             min_area=120.0,
             max_regions=4,
             prefer_center=True,
-            zone=zone,
+            zone=analysis_zone,
             bg_mask=bg,
+            head_mask=head_mask,
+            head_center=head_center,
         )
         drawn["red"] = True
 
     dandruff_k, show_irrit = _dandruff_irritation_mask(
-        img_bgr, zone, tissue, exclude_mask=cv2.bitwise_or(severe_k, mild_k)
+        img_bgr, analysis_zone, tissue, exclude_mask=cv2.bitwise_or(severe_k, mild_k)
     )
     if show_irrit and cv2.countNonZero(dandruff_k) >= 160:
         _draw_zone_outlines(
@@ -963,8 +1093,10 @@ def _draw_clinical_scalp_overlay(
             line_thickness=line_thin,
             min_area=150.0,
             max_regions=3,
-            zone=zone,
+            zone=analysis_zone,
             bg_mask=bg,
+            head_mask=head_mask,
+            head_center=head_center,
         )
         drawn["orange"] = True
 
@@ -1202,8 +1334,6 @@ def _cnn_raw_probability_map(
     else:
         mask = np.clip(mask, 0.0, 1.0)
 
-    head = _head_roi_mask(h, w)
-    mask = mask * (head.astype(np.float32) / 255.0)
     return mask.astype(np.float32)
 
 
@@ -1270,6 +1400,40 @@ def _split_bald_and_thin_from_prob(
     thin = cv2.morphologyEx(thin, cv2.MORPH_OPEN, k3)
     thin = cv2.bitwise_and(thin, cv2.bitwise_not(bald))
     return bald, thin
+
+
+def _merge_visible_scalp_detection(
+    img_bgr: np.ndarray,
+    head_mask: np.ndarray,
+    bald_mask: np.ndarray,
+    thin_mask: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    When CNN scores are weak (desk selfies, new lighting), reinforce masks from visible scalp + hair density.
+    Still scoped to detected head only — not hard-coded per image.
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    hair = ((gray < 112) & (sat < 125)).astype(np.uint8) * 255
+    hair = cv2.bitwise_and(hair, head_mask)
+    hf = cv2.GaussianBlur(hair.astype(np.float32) / 255.0, (27, 27), 0)
+    visible = (
+        (gray > 88)
+        & (gray < 208)
+        & (sat < 98)
+        & (head_mask > 0)
+        & (hf < 0.42)
+    )
+    bald_cv = (visible & (hf < 0.20)).astype(np.uint8) * 255
+    thin_cv = (visible & (hf >= 0.20) & (hf < 0.45)).astype(np.uint8) * 255
+    bald_out = cv2.bitwise_or(bald_mask, bald_cv)
+    thin_out = cv2.bitwise_or(thin_mask, thin_cv)
+    thin_out = cv2.bitwise_and(thin_out, cv2.bitwise_not(bald_out))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    bald_out = cv2.morphologyEx(bald_out, cv2.MORPH_OPEN, k)
+    thin_out = cv2.morphologyEx(thin_out, cv2.MORPH_OPEN, k)
+    return bald_out, thin_out
 
 
 def _bald_thin_masks_opencv_vertex(img: np.ndarray, head_roi: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1530,18 +1694,18 @@ def process_scalp_image(
     bald_u = np.zeros((h, w), dtype=np.uint8)
     thin_u = np.zeros((h, w), dtype=np.uint8)
     prob = None
+    head_mask, _head_center, _head_axes = _detect_scalp_head_mask(img)
+    keep = _vertex_analysis_keep_mask(img)
     if use_cnn and cnn_model_path:
         prob = _cnn_raw_probability_map(image_bytes, cnn_model_path)
-    keep = _vertex_analysis_keep_mask(img)
     if prob is not None:
-        tissue = _scalp_tissue_mask(img, keep)
-        prob = prob * (tissue.astype(np.float32) / 255.0)
-        bald_u, thin_u = _split_bald_and_thin_from_prob(prob, tissue)
-        bald_u = cv2.bitwise_and(bald_u, tissue)
-        thin_u = cv2.bitwise_and(thin_u, tissue)
+        prob_on_head = np.where(head_mask > 0, prob, 0.0).astype(np.float32)
+        bald_u, thin_u = _split_bald_and_thin_from_prob(prob_on_head, head_mask)
+        bald_u, thin_u = _merge_visible_scalp_detection(img, head_mask, bald_u, thin_u)
         segmentation_method = "cnn_bald_thin"
     else:
-        _, bald_u, thin_u = _bald_thin_masks_opencv_vertex(img, head_roi)
+        _, bald_u, thin_u = _bald_thin_masks_opencv_vertex(img, head_mask)
+        bald_u, thin_u = _merge_visible_scalp_detection(img, head_mask, bald_u, thin_u)
         segmentation_method = "opencv_bald_thin"
 
     bald_u = cv2.bitwise_and(bald_u, keep)
@@ -1549,7 +1713,7 @@ def process_scalp_image(
 
     mask_scalp = cv2.bitwise_or(bald_u, thin_u)
     _, mask_hair = _bald_area_mask_opencv(img)
-    hair_region = cv2.bitwise_and(cv2.bitwise_not(mask_scalp), head_roi)
+    hair_region = cv2.bitwise_and(cv2.bitwise_not(mask_scalp), head_mask)
     hair_pixels = float(cv2.countNonZero(cv2.bitwise_and(mask_hair, hair_region)))
 
     hair_area_cm2 = round(hair_pixels / (PIXELS_PER_CM * PIXELS_PER_CM), 2)
