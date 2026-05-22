@@ -468,6 +468,9 @@ def _detect_scalp_head_mask(img_bgr: np.ndarray) -> Tuple[np.ndarray, Tuple[int,
     Returns (head_mask_uint8, (cx, cy), (axis_x, axis_y)).
     """
     h, w = img_bgr.shape[:2]
+    if _crown_topdown_layout(img_bgr) and cv2.countNonZero(_colored_background_mask(img_bgr)) > int(0.04 * h * w):
+        cx, cy = w // 2, int(h * 0.48)
+        return _head_roi_mask(h, w, center=(cx, cy)), (cx, cy), (int(w * 0.40), int(h * 0.42))
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     sat = hsv[:, :, 1]
@@ -564,9 +567,8 @@ def _crown_topdown_layout(img_bgr: np.ndarray) -> bool:
         gray[int(h * 0.72) : h, int(w * 0.65) : w],
     ]
     corner_mean = float(np.mean(np.concatenate([p.ravel() for p in patches if p.size > 0])))
-    head_det, (dcx, dcy), _ = _detect_scalp_head_mask(img_bgr)
-    head = head_det > 0
-    cx, cy = dcx, int(dcy * 0.98)
+    head = _head_roi_mask(h, w) > 0
+    cx, cy = w // 2, int(h * 0.46)
     hairish = (gray < center_mean + 22) & head
     hair_frac = float(np.sum(hairish)) / (float(np.sum(head)) + 1e-6)
     if center_mean + 6.0 < corner_mean and hair_frac > 0.07:
@@ -576,7 +578,7 @@ def _crown_topdown_layout(img_bgr: np.ndarray) -> bool:
     scalp_like = (gray_u8 > 95) & (gray_u8 < 200) & head
     center_roi = np.zeros((h, w), dtype=np.uint8)
     cv2.ellipse(center_roi, (cx, cy), (int(w * 0.20), int(h * 0.18)), 0, 0, 360, 255, -1)
-    center_roi = cv2.bitwise_and(center_roi, head_det)
+    center_roi = cv2.bitwise_and(center_roi, _head_roi_mask(h, w))
     scalp_frac = float(np.sum(scalp_like & (center_roi > 0))) / (float(np.sum(center_roi > 0)) + 1e-6)
     return scalp_frac > 0.14
 
@@ -644,6 +646,19 @@ def _contour_centroid_inside_mask(contour: np.ndarray, mask: np.ndarray) -> bool
     return mask[cy, cx] > 0
 
 
+def _smooth_binary_mask(mask: np.ndarray) -> np.ndarray:
+    """Organic blob edges (reference-style), not pixel-stair contours."""
+    if cv2.countNonZero(mask) < 40:
+        return mask
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    k11 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    work = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k11)
+    work = cv2.morphologyEx(work, cv2.MORPH_OPEN, k5)
+    blur = cv2.GaussianBlur(work, (13, 13), 0)
+    _, smooth = cv2.threshold(blur, 88, 255, cv2.THRESH_BINARY)
+    return smooth
+
+
 def _extract_region_components(
     mask: np.ndarray,
     zone: np.ndarray,
@@ -652,12 +667,12 @@ def _extract_region_components(
     max_area: int,
     max_regions: int = 6,
 ) -> List[np.ndarray]:
-    """Separate connected regions; split oversized blobs so one teal polygon does not cover the crown."""
+    """Separate connected regions; keep smooth crown-sized blobs (avoid tiny jagged fragments)."""
     h, w = mask.shape[:2]
-    work = cv2.bitwise_and(mask, zone)
+    work = cv2.bitwise_and(_smooth_binary_mask(mask), zone)
     if cv2.countNonZero(work) < min_area:
         return []
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     work = cv2.morphologyEx(work, cv2.MORPH_OPEN, k3)
     n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(work, connectivity=8)
     ranked: List[Tuple[int, int]] = []
@@ -675,20 +690,8 @@ def _extract_region_components(
         if area <= max_area:
             out.append(comp)
             continue
-        erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-        eroded = cv2.erode(comp, erode_k, iterations=2)
-        sub_n, sub_l, sub_s, _ = cv2.connectedComponentsWithStats(eroded, connectivity=8)
-        for sl in range(1, sub_n):
-            if len(out) >= max_regions:
-                break
-            sa = int(sub_s[sl, cv2.CC_STAT_AREA])
-            if sa < min_area // 2:
-                continue
-            sub = (sub_l == sl).astype(np.uint8) * 255
-            sub = cv2.dilate(sub, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
-            sub = cv2.bitwise_and(sub, comp)
-            if min_area // 2 <= cv2.countNonZero(sub) <= max_area:
-                out.append(sub)
+        # Oversized region: keep one smooth outline for the whole patch (no erode shards).
+        out.append(_smooth_binary_mask(comp))
     return out
 
 
@@ -878,79 +881,79 @@ def _severity_zone_masks(
     severe = np.zeros((h, w), dtype=np.uint8)
     mild = np.zeros((h, w), dtype=np.uint8)
     zone_px = max(1, int(cv2.countNonZero(zone)))
-    min_severe = max(120, int(0.0015 * zone_px))
-    max_severe = max(4000, int(0.042 * zone_px))
-    min_mild = max(140, int(0.0014 * zone_px))
-    max_mild = max(4500, int(0.052 * zone_px))
+    min_severe = max(220, int(0.0025 * zone_px))
+    max_severe = max(6000, int(0.08 * zone_px))
+    min_mild = max(180, int(0.002 * zone_px))
+    max_mild = max(9000, int(0.12 * zone_px))
 
-    t_hot = 0.42
-    t_mild_lo = t_mild
-    if prob is not None:
-        vals = prob[(zone > 0) & (prob > 0.02)]
-        if vals.size >= 80:
-            t_mild_lo = float(max(0.12, np.percentile(vals, 68)))
-            t_hot = float(max(t_mild_lo + 0.04, np.percentile(vals, 93)))
-            t_severe = min(t_severe, t_hot * 0.9)
-
+    k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     bald_w = cv2.bitwise_and(bald_mask, zone)
-    hot_w = np.zeros((h, w), dtype=np.uint8)
-    mild_band = np.zeros((h, w), dtype=np.uint8)
-    if prob is not None:
-        hot_w = ((prob >= t_hot).astype(np.uint8) * 255)
-        hot_w = cv2.bitwise_and(hot_w, zone)
-        mild_band = (
-            ((prob >= t_mild_lo) & (prob < t_hot)).astype(np.uint8) * 255
-        )
-        mild_band = cv2.bitwise_and(mild_band, zone)
-    severe_src = cv2.bitwise_or(bald_w, hot_w)
+    thin_w0 = cv2.bitwise_and(thin_mask, zone)
 
-    for comp in _extract_region_components(severe_src, zone, min_area=min_severe, max_area=max_severe, max_regions=4):
+    if prob is not None:
+        vals = prob[(zone > 0) & (prob > 0.01)]
+        if vals.size >= 80:
+            p72 = float(np.percentile(vals, 72))
+            p94 = float(np.percentile(vals, 94))
+            p97 = float(np.percentile(vals, 97))
+            severe_src = ((prob >= p97).astype(np.uint8) * 255)
+            severe_src = cv2.bitwise_and(severe_src, zone)
+            mild_src = (
+                ((prob >= p72) & (prob < p94)).astype(np.uint8) * 255
+            )
+            mild_src = cv2.bitwise_and(mild_src, zone)
+        else:
+            severe_src = bald_w
+            mild_src = thin_w0
+    else:
+        severe_src = bald_w
+        mild_src = thin_w0
+
+    severe_src = cv2.morphologyEx(severe_src, cv2.MORPH_CLOSE, k9)
+    mild_src = cv2.morphologyEx(
+        cv2.bitwise_or(mild_src, thin_w0), cv2.MORPH_CLOSE, k9
+    )
+    mild_src = cv2.bitwise_and(mild_src, cv2.bitwise_not(severe_src))
+
+    for comp in _extract_region_components(
+        severe_src, zone, min_area=min_severe, max_area=max_severe, max_regions=3
+    ):
         contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             continue
         c = max(contours, key=cv2.contourArea)
-        if not _contour_mostly_inside_zone(c, zone, min_ratio=0.78):
-            continue
-        area = float(cv2.contourArea(c))
-        mp = _mean_prob_in_contour(prob, c, h, w) if prob is not None else 1.0
-        pk = _peak_prob_in_contour(prob, c, h, w) if prob is not None else 1.0
-        if prob is None or mp >= t_severe or pk >= t_hot * 0.92 or (mp >= t_severe * 0.85 and area >= min_severe):
+        if _contour_mostly_inside_zone(c, zone, min_ratio=0.75):
             cv2.drawContours(severe, [c], -1, 255, -1)
 
-    thin_w = cv2.bitwise_or(
-        cv2.bitwise_and(thin_mask, cv2.bitwise_and(zone, cv2.bitwise_not(severe))),
-        cv2.bitwise_and(mild_band, cv2.bitwise_not(severe)),
-    )
-    for comp in _extract_region_components(thin_w, zone, min_area=min_mild, max_area=max_mild, max_regions=5):
+    for comp in _extract_region_components(
+        mild_src, zone, min_area=min_mild, max_area=max_mild, max_regions=4
+    ):
         contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             continue
         c = max(contours, key=cv2.contourArea)
-        if not _contour_mostly_inside_zone(c, zone, min_ratio=0.75):
-            continue
-        area = float(cv2.contourArea(c))
-        mp = _mean_prob_in_contour(prob, c, h, w) if prob is not None else 0.5
-        if prob is None:
-            painted = np.zeros((h, w), dtype=np.uint8)
-            cv2.drawContours(painted, [c], -1, 255, -1)
-            bald_frac = float(cv2.countNonZero(cv2.bitwise_and(painted, bald_mask))) / (area + 1e-6)
-            if bald_frac < 0.45:
-                cv2.drawContours(mild, [c], -1, 255, -1)
-        elif t_mild <= mp < t_severe:
+        if _contour_mostly_inside_zone(c, zone, min_ratio=0.72):
             cv2.drawContours(mild, [c], -1, 255, -1)
 
     mild = cv2.bitwise_and(mild, cv2.bitwise_not(severe))
     return severe, mild
 
 
-def _contour_outline_points(contour: np.ndarray, *, smooth_eps_ratio: float = 0.011) -> np.ndarray:
-    """Smooth hand-drawn-style outline along the real region (not a huge convex hull)."""
+def _contour_outline_points(contour: np.ndarray, *, smooth_eps_ratio: float = 0.0035) -> np.ndarray:
+    """Smooth closed curve (many points, gentle simplify) — matches prior good overlay look."""
+    if contour is None or len(contour) < 3:
+        return contour
     peri = cv2.arcLength(contour, True)
-    eps = max(2.0, smooth_eps_ratio * peri)
+    if peri < 20:
+        return contour
+    eps = max(1.2, smooth_eps_ratio * peri)
     approx = cv2.approxPolyDP(contour, eps, True)
-    if len(approx) >= 4:
+    if len(approx) >= 6:
         return approx
-    return contour
+    hull = cv2.convexHull(contour)
+    eps2 = max(2.0, 0.008 * cv2.arcLength(hull, True))
+    approx2 = cv2.approxPolyDP(hull, eps2, True)
+    return approx2 if len(approx2) >= 4 else hull
 
 
 def _draw_zone_outlines(
@@ -968,14 +971,39 @@ def _draw_zone_outlines(
     head_mask: Optional[np.ndarray] = None,
     head_center: Optional[Tuple[int, int]] = None,
 ) -> None:
-    """Thin closed outlines on scalp only — professional markup, no filled washes."""
+    """Thin smooth closed outlines on scalp only (one contour per detected blob)."""
     h, w = overlay_bgr.shape[:2]
-    work = mask.copy()
+    work = _smooth_binary_mask(mask)
     if head_mask is not None:
         work = cv2.bitwise_and(work, head_mask)
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, k)
-    contours, _ = cv2.findContours(work, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if zone is not None:
+        work = cv2.bitwise_and(work, zone)
+
+    blobs: List[np.ndarray] = []
+    if zone is not None:
+        zone_px = max(1, int(cv2.countNonZero(zone)))
+        max_blob = int(0.12 * h * w)
+        min_blob = max(int(min_area), int(0.002 * zone_px))
+        blobs = _extract_region_components(
+            work, zone, min_area=min_blob, max_area=max_blob, max_regions=max_regions
+        )
+    if not blobs:
+        blobs = [work]
+
+    contours_all: List[np.ndarray] = []
+    for blob in blobs:
+        if cv2.countNonZero(blob) < min_area:
+            continue
+        smooth_blob = _smooth_binary_mask(blob)
+        cs, _ = cv2.findContours(smooth_blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not cs:
+            continue
+        c = max(cs, key=cv2.contourArea)
+        if float(cv2.contourArea(c)) < min_area:
+            continue
+        contours_all.append(c)
+
+    contours = contours_all
     if head_center is not None:
         center = np.array([float(head_center[0]), float(head_center[1])], dtype=np.float32)
     else:
@@ -1045,20 +1073,23 @@ def _draw_clinical_scalp_overlay(
     severe_k = cv2.bitwise_and(severe_k, head_mask)
     mild_k = cv2.bitwise_and(mild_k, head_mask)
 
-    teal_bgr = (170, 210, 80)
+    teal_bgr = (185, 205, 70)
     yellow_bgr = (0, 200, 255)
-    red_bgr = (40, 40, 220)
-    line_thin = max(2, min(h, w) // 130)
-    line_red = max(2, min(h, w) // 110)
+    red_bgr = (35, 35, 235)
+    line_thin = max(2, min(h, w) // 150)
+    line_red = max(2, min(h, w) // 140)
 
-    if cv2.countNonZero(mild_k) >= 80:
+    mild_k = _smooth_binary_mask(mild_k)
+    severe_k = _smooth_binary_mask(severe_k)
+
+    if cv2.countNonZero(mild_k) >= 120:
         _draw_zone_outlines(
             overlay_bgr,
             mild_k,
             color_bgr=teal_bgr,
             line_thickness=line_thin,
-            min_area=140.0,
-            max_regions=5,
+            min_area=180.0,
+            max_regions=4,
             zone=analysis_zone,
             bg_mask=bg,
             head_mask=head_mask,
@@ -1066,14 +1097,14 @@ def _draw_clinical_scalp_overlay(
         )
         drawn["teal"] = True
 
-    if cv2.countNonZero(severe_k) >= 60:
+    if cv2.countNonZero(severe_k) >= 180:
         _draw_zone_outlines(
             overlay_bgr,
             severe_k,
             color_bgr=red_bgr,
             line_thickness=line_red,
-            min_area=120.0,
-            max_regions=4,
+            min_area=220.0,
+            max_regions=3,
             prefer_center=True,
             zone=analysis_zone,
             bg_mask=bg,
