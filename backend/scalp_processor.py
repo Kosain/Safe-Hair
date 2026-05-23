@@ -440,6 +440,38 @@ def _head_roi_mask(
     return head_roi
 
 
+def _crown_protect_mask(
+    h: int,
+    w: int,
+    *,
+    center: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
+    """Central crown — never treat bright visible scalp as desk/monitor background."""
+    cx, cy = center if center is not None else (w // 2, int(h * 0.46))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(
+        mask,
+        (int(cx), int(cy)),
+        (int(w * 0.30), int(h * 0.26)),
+        0,
+        0,
+        360,
+        255,
+        -1,
+    )
+    return mask
+
+
+def _visible_scalp_mask(img_bgr: np.ndarray, crown: np.ndarray) -> np.ndarray:
+    """Bright low-saturation scalp visible through hair (crown thinning / bald)."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    skin = ((sat < 88) & (gray > 108) & (gray < 215) & (crown > 0)).astype(np.uint8) * 255
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    return cv2.morphologyEx(skin, cv2.MORPH_OPEN, k5)
+
+
 def _environment_background_mask(img_bgr: np.ndarray) -> np.ndarray:
     """
     Desk selfies / clinic room: monitor, walls, desk — not scalp.
@@ -450,8 +482,11 @@ def _environment_background_mask(img_bgr: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
+    crown_guard = _crown_protect_mask(h, w)
     bright_ui = ((gray > 168) & (sat < 50)).astype(np.uint8) * 255
+    bright_ui = cv2.bitwise_and(bright_ui, cv2.bitwise_not(crown_guard))
     desk_gray = ((gray > 35) & (gray < 130) & (sat < 38)).astype(np.uint8) * 255
+    desk_gray = cv2.bitwise_and(desk_gray, cv2.bitwise_not(crown_guard))
     top_env = np.zeros((h, w), dtype=np.uint8)
     top_env[: max(1, int(h * 0.30)), :] = 255
     top_env = cv2.bitwise_and(top_env, bright_ui)
@@ -509,8 +544,20 @@ def _detect_scalp_head_mask(img_bgr: np.ndarray) -> Tuple[np.ndarray, Tuple[int,
             best_lbl = lbl
 
     if best_lbl < 0:
-        cx, cy = w // 2, int(h * 0.48)
-        return _head_roi_mask(h, w, center=(cx, cy)), (cx, cy), (int(w * 0.40), int(h * 0.42))
+        cx, cy = w // 2, int(h * 0.46)
+        roi = _head_roi_mask(h, w, center=(cx, cy), axes=(int(w * 0.36), int(h * 0.38)))
+        vis = _visible_scalp_mask(img_bgr, roi)
+        if cv2.countNonZero(vis) > 180:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+            head = cv2.morphologyEx(vis, cv2.MORPH_CLOSE, k)
+            head = cv2.dilate(head, k, iterations=1)
+            head = cv2.bitwise_and(head, roi)
+            m = cv2.moments(head, binaryImage=True)
+            if m["m00"] > 0:
+                cx = int(m["m10"] / m["m00"])
+                cy = int(m["m01"] / m["m00"])
+            return head, (cx, cy), (int(w * 0.34), int(h * 0.36))
+        return roi, (cx, cy), (int(w * 0.36), int(h * 0.38))
 
     head = (labels == best_lbl).astype(np.uint8) * 255
     x, y, bw, bh, _ = stats[best_lbl]
@@ -590,6 +637,8 @@ def _vertex_analysis_keep_mask(img_bgr: np.ndarray) -> np.ndarray:
     keyhole = _vertex_keyhole_mask(h, w, center=center)
     roi = cv2.bitwise_and(head_mask, keyhole)
     env = _environment_background_mask(img_bgr)
+    # Bright scalp skin must not zero out the detected head (common on clinic drapes).
+    env = cv2.bitwise_and(env, cv2.bitwise_not(head_mask))
     return cv2.bitwise_and(roi, cv2.bitwise_not(env))
 
 
@@ -616,6 +665,8 @@ def _scalp_tissue_mask(img_bgr: np.ndarray, zone: np.ndarray) -> np.ndarray:
     tissue = cv2.bitwise_or(skin, hair)
     tissue = cv2.bitwise_and(tissue, zone)
     tissue = cv2.bitwise_and(tissue, not_bg)
+    vis = _visible_scalp_mask(img_bgr, zone)
+    tissue = cv2.bitwise_or(tissue, cv2.bitwise_and(vis, zone))
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     tissue = cv2.morphologyEx(tissue, cv2.MORPH_CLOSE, k)
     tissue = cv2.morphologyEx(tissue, cv2.MORPH_OPEN, k)

@@ -134,7 +134,14 @@ def _analysis_zone(img_bgr: np.ndarray, keep_zone: np.ndarray) -> Tuple[np.ndarr
     keyhole = sp._vertex_keyhole_mask(h, w, center=head_center)
     zone = cv2.bitwise_and(cv2.bitwise_and(keep_zone, keyhole), head_mask)
     tissue = sp._scalp_tissue_mask(img_bgr, zone)
-    zone = cv2.bitwise_and(zone, tissue)
+    vis = _visible_scalp_mask(img_bgr, zone)
+    zone = cv2.bitwise_or(cv2.bitwise_and(zone, tissue), cv2.bitwise_and(vis, keep_zone))
+    zone = cv2.bitwise_and(zone, head_mask)
+    if cv2.countNonZero(zone) < int(0.015 * h * w):
+        zone = cv2.bitwise_and(
+            sp._head_roi_mask(h, w, center=head_center, axes=(int(w * 0.34), int(h * 0.30))),
+            keyhole,
+        )
     return zone, sp._environment_background_mask(img_bgr), head_center
 
 
@@ -179,13 +186,9 @@ def _infection_mask(
 
 
 def _visible_scalp_mask(img_bgr: np.ndarray, crown: np.ndarray) -> np.ndarray:
-    """Bright low-saturation scalp visible through hair (crown thinning / bald)."""
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    sat = hsv[:, :, 1]
-    skin = ((sat < 88) & (gray > 108) & (gray < 215) & (crown > 0)).astype(np.uint8) * 255
-    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    return cv2.morphologyEx(skin, cv2.MORPH_OPEN, k5)
+    import scalp_processor as sp
+
+    return sp._visible_scalp_mask(img_bgr, crown)
 
 
 def _largest_connected(mask: np.ndarray, crown: np.ndarray) -> np.ndarray:
@@ -642,7 +645,7 @@ def _package_api_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "max": result.get("graft_max"),
         "bald_area_cm2": result.get("bald_area_cm2"),
     }
-    result["overlay_pipeline_version"] = "v8_damage_contours"
+    result["overlay_pipeline_version"] = "v8b_crown_zone_fix"
     result["metrics_source"] = (
         "Computed from crown bald/thin/severe/mild pixel evidence on this photo — not random."
     )

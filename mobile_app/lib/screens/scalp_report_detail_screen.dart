@@ -114,7 +114,8 @@ bool _overlayIsStale(Map<String, dynamic> d) {
     v = summary['overlayPipelineVersion']?.toString();
   }
   if (v == null || v.isEmpty) return true;
-  return v != 'v8_damage_contours' &&
+  return v != 'v8b_crown_zone_fix' &&
+      v != 'v8_damage_contours' &&
       v != 'v7_evidence_metrics' &&
       v != 'v6_cnn_crown_split' &&
       v != 'v5_red_orange_split' &&
