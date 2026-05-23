@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 try:
+  import scalp_analyzer  # noqa: F401 — strict overlay colors (red/orange/teal)
   from scalp_processor import analyze_scalp_with_opencv
   _has_opencv = True
 except ImportError:

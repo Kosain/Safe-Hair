@@ -29,14 +29,15 @@ DateTime? _tsToDate(dynamic v) {
 
 String? scalpImageUrlFrom(Map<String, dynamic> d) {
   final summary = d['summary'];
-  for (final key in ['scalpImageUrl', 'imageUrl', 'scalpPhotoUrl', 'photoUrl']) {
+  // Prefer URL that was uploaded from the AI overlay JPEG (not the raw camera file).
+  for (final key in ['overlayImageUrl', 'overlayScalpImageUrl', 'scalpImageUrl', 'imageUrl', 'scalpPhotoUrl', 'photoUrl']) {
     final v = d[key]?.toString().trim();
     if (v != null && v.isNotEmpty && (v.startsWith('http://') || v.startsWith('https://'))) {
       return v;
     }
   }
   if (summary is Map) {
-    for (final key in ['scalpImageUrl', 'imageUrl', 'scalpPhotoUrl', 'photoUrl']) {
+    for (final key in ['overlayImageUrl', 'overlayScalpImageUrl', 'scalpImageUrl', 'imageUrl', 'scalpPhotoUrl', 'photoUrl']) {
       final v = summary[key]?.toString().trim();
       if (v != null && v.isNotEmpty && (v.startsWith('http://') || v.startsWith('https://'))) {
         return v;
@@ -62,9 +63,9 @@ Uint8List? scalpImageBytesFromDoc(Map<String, dynamic> d) {
 
   final summary = d['summary'];
   for (final key in [
-    'analyzedImageBase64',
-    'overlay_image_base64',
     'overlayImageBase64',
+    'overlay_image_base64',
+    'analyzedImageBase64',
     'scalpImageBase64',
     'imageBase64',
   ]) {
@@ -76,9 +77,9 @@ Uint8List? scalpImageBytesFromDoc(Map<String, dynamic> d) {
   }
   if (summary is Map) {
     for (final key in [
-      'analyzedImageBase64',
-      'overlay_image_base64',
       'overlayImageBase64',
+      'overlay_image_base64',
+      'analyzedImageBase64',
       'scalpImageBase64',
       'imageBase64',
     ]) {
@@ -105,6 +106,21 @@ String cleanRecommendationLine(String raw) {
 List<Map<String, dynamic>> _defaultIssues() => [];
 
 List<String> _defaultRecommendations() => [];
+
+bool _overlayIsStale(Map<String, dynamic> d) {
+  String? v = d['overlayPipelineVersion']?.toString();
+  final summary = d['summary'];
+  if ((v == null || v.isEmpty) && summary is Map) {
+    v = summary['overlayPipelineVersion']?.toString();
+  }
+  if (v == null || v.isEmpty) return true;
+  return v != 'v8_damage_contours' &&
+      v != 'v7_evidence_metrics' &&
+      v != 'v6_cnn_crown_split' &&
+      v != 'v5_red_orange_split' &&
+      v != 'v4_density_split' &&
+      v != 'v3_red_orange_teal';
+}
 
 class ScalpReportDetailScreen extends StatefulWidget {
   const ScalpReportDetailScreen({super.key, required this.reportId});
@@ -281,29 +297,24 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
     final age = (d['patientAge'] as num?)?.round();
     final gender = d['patientGender']?.toString() ?? 'Not specified';
     final summary = (d['summary'] is Map) ? Map<String, dynamic>.from(d['summary'] as Map) : const <String, dynamic>{};
-    final strength = ((d['strength'] as num?) ??
-            (summary['hairStrength'] as num?) ??
-            (summary['hair_strength'] as num?))
-        ?.round() ??
-        0;
-    final scalp = ((d['scalpHealth'] as num?) ??
-            (d['scalp'] as num?) ??
-            (summary['scalpHealth'] as num?) ??
-            (summary['scalp_health'] as num?))
-        ?.round() ??
-        0;
-    final damage = ((d['hairDamage'] as num?) ??
-            (d['damage'] as num?) ??
-            (summary['hairDamageLevel'] as num?) ??
-            (summary['hair_damage_level'] as num?) ??
-            (100 - strength))
-        .round();
-    final fall = ((d['hairFallRisk'] as num?) ??
-            (d['fall'] as num?) ??
-            (summary['hairFallRisk'] as num?) ??
-            (summary['hair_fall_risk'] as num?) ??
-            (100 - scalp))
-        .round();
+    final metrics = (summary['metrics'] is Map) ? Map<String, dynamic>.from(summary['metrics'] as Map) : const <String, dynamic>{};
+    int metricRound(List<String> keys) {
+      for (final k in keys) {
+        final v = d[k] ?? summary[k] ?? metrics[k];
+        if (v is num) return v.round();
+      }
+      return 0;
+    }
+
+    final strength = metricRound(['strength', 'hairStrength', 'hair_strength']);
+    final scalp = metricRound(['scalpHealth', 'scalp', 'scalp_health']);
+    final damage = metricRound(['hairDamage', 'damage', 'hairDamageLevel', 'hair_damage_level']);
+    final fall = metricRound(['hairFallRisk', 'fall', 'hair_fall_risk']);
+    final baldRatioPct = () {
+      final br = d['baldRatio'] ?? d['bald_ratio'] ?? summary['baldRatio'] ?? summary['bald_ratio'];
+      if (br is num) return (br * (br <= 1 ? 100 : 1)).round();
+      return null;
+    }();
     final overall = (d['overallScore'] as num?)?.round() ??
         (d['averageScore'] as num?)?.round() ??
         ((strength + scalp + (100 - damage) + (100 - fall)) / 4).round();
@@ -426,6 +437,39 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Scalp photo (highlighted)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                if (_overlayIsStale(d)) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.shade200),
+                    ),
+                    child: const Text(
+                      'This report uses an older saved overlay (yellow/teal). Run a new scan from My Scans to refresh colors (red / orange / teal).',
+                      style: TextStyle(fontSize: 12, height: 1.35),
+                    ),
+                  ),
+                ] else if (d['hasAiOverlay'] != true &&
+                    (summary['hasAiOverlay'] != true) &&
+                    (scalpMem == null || scalpMem.isEmpty)) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: const Text(
+                      'No AI trace overlay was saved for this report (raw photo only). Run a new scan from My Scans with the backend running on port 8000.',
+                      style: TextStyle(fontSize: 12, height: 1.35),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
@@ -497,6 +541,13 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey.shade800, height: 1.4),
                   softWrap: true,
                 ),
+                if (baldRatioPct != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Scores are computed from this photo by the AI backend (visible thinning ~$baldRatioPct% of frame).',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.35),
+                  ),
+                ],
               ],
             ),
           ),

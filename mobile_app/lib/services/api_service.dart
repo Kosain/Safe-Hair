@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:http/http.dart' as http;
 
 import '../core/constants.dart';
+import '../utils/scalp_api_normalize.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -205,14 +206,7 @@ class ApiService {
         patientAge: patientAge,
       );
       if (v1 != null && (v1['analysis'] != null || v1['hair_strength'] != null)) {
-        if (v1['analysis'] is Map<String, dynamic>) {
-          return {
-            'success': true,
-            ...(v1['analysis'] as Map<String, dynamic>),
-            'report': v1['report'],
-          };
-        }
-        return v1;
+        return normalizeScalpApiResponse(v1);
       }
 
       // Direct AI route (trained OpenCV + ONNX + joblib on backend).
@@ -233,9 +227,9 @@ class ApiService {
         final body = jsonDecode(res.body);
         if (body is Map<String, dynamic>) {
           if (body['success'] == true) {
-            return Map<String, dynamic>.from(body)..remove('success');
+            return normalizeScalpApiResponse(Map<String, dynamic>.from(body)..remove('success'));
           }
-          return body;
+          return normalizeScalpApiResponse(Map<String, dynamic>.from(body));
         }
       }
 

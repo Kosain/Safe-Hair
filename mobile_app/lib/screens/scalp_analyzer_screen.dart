@@ -268,6 +268,10 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
                 'graftEstimateText': (analysis.graftMin != null && analysis.graftMax != null)
                     ? '${analysis.graftMin} - ${analysis.graftMax}'
                     : 'Not available',
+                'overlayPipelineVersion': (apiResult['overlay_pipeline_version'] ??
+                        apiResult['overlayPipelineVersion'])
+                    ?.toString() ??
+                    'v3_red_orange_teal',
                 'summary': {
                   'hairStrength': strength,
                   'scalpHealth': scalp,
@@ -282,6 +286,10 @@ class _ScalpAnalyzerScreenState extends State<ScalpAnalyzerScreen> {
                   'viewOrientation': analysis.viewOrientation,
                   'estimateReliabilityPercent': analysis.estimateReliabilityPercent,
                   if (overlayRaw != null && overlayRaw.isNotEmpty) 'overlayImageBase64': overlayRaw,
+                  'overlayPipelineVersion': (apiResult['overlay_pipeline_version'] ??
+                          apiResult['overlayPipelineVersion'])
+                      ?.toString() ??
+                      'v3_red_orange_teal',
                 },
               },
             );

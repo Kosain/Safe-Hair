@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../services/firebase_service.dart';
+import '../utils/scalp_api_normalize.dart';
 import '../utils/scalp_issue_recommendation_text.dart';
 import '../utils/scalp_report_pdf.dart';
 import '../widgets/patient_web_scaffold.dart';
@@ -93,30 +94,48 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
       if (api == null || api['_error'] != null) {
         throw Exception(api?['_error']?.toString() ?? 'AI API returned no result.');
       }
+      final norm = normalizeScalpApiResponse(api);
 
-      final strength = ((api['hair_strength'] ?? api['hairStrength']) as num?)?.round() ?? 0;
-      final scalp = ((api['scalp_health'] ?? api['scalpHealth']) as num?)?.round() ?? 0;
-      final density = ((api['hair_density'] ?? api['hairDensity']) as num?)?.round() ?? 0;
-      final moisture = ((api['moisture_level'] ?? api['moistureLevel']) as num?)?.round() ?? 0;
-      final damage = ((api['hair_damage_level'] ?? api['hairDamageLevel']) as num?)?.round() ??
+      final strength = scalpApiNum(norm, const ['hair_strength', 'hairStrength'])?.round() ?? 0;
+      final scalp = scalpApiNum(norm, const ['scalp_health', 'scalpHealth'])?.round() ?? 0;
+      final density = scalpApiNum(norm, const ['hair_density', 'hairDensity'])?.round() ?? 0;
+      final moisture = scalpApiNum(norm, const ['moisture_level', 'moistureLevel'])?.round() ?? 0;
+      final damage = scalpApiNum(norm, const ['hair_damage_level', 'hairDamageLevel'])?.round() ??
           (100 - density).clamp(0, 100);
-      final fall = ((api['hair_fall_risk'] ?? api['hairFallRisk']) as num?)?.round() ??
+      final fall = scalpApiNum(norm, const ['hair_fall_risk', 'hairFallRisk'])?.round() ??
           (100 - scalp).clamp(0, 100);
+      final baldRatio = scalpApiNum(norm, const ['bald_ratio', 'baldRatio']);
       final average = FirebaseService.hairHealthAverageScore(strength, scalp, damage, fall);
       final dateStr = DateFormat('d MMM y').format(now);
       final timeStr = DateFormat('HH:mm').format(now);
 
       final reportId = FirebaseService.firestore.collection('patient_details').doc(uid).collection('reports').doc().id;
-      final overlayRaw = (api['overlay_image_base64'] ?? api['overlayImageBase64'])?.toString();
+      final overlayRaw = (norm['overlay_image_base64'] ?? norm['overlayImageBase64'])?.toString();
+      final overlayLegend = norm['overlay_legend'];
       final overlayBase64 =
           (overlayRaw != null && overlayRaw.isNotEmpty) ? _normalizeBase64(overlayRaw) : null;
       final originalBase64 = base64Encode(_selectedImageBytes!);
       final analyzedBase64 =
           (overlayBase64 != null && overlayBase64.isNotEmpty) ? overlayBase64 : originalBase64;
+      final overlayPipelineVersion =
+          (norm['overlay_pipeline_version'] ?? norm['overlayPipelineVersion'])?.toString() ?? '';
+      final hasAiOverlay = (norm['has_ai_overlay'] == true) ||
+          (overlayBase64 != null &&
+              overlayBase64.isNotEmpty &&
+              (overlayLegend is Map
+                  ? ((overlayLegend['red'] == true) ||
+                      (overlayLegend['orange'] == true) ||
+                      (overlayLegend['teal'] == true))
+                  : true));
+
+      // Storage must be the AI-highlighted image (not the raw upload).
+      final Uint8List scalpUploadBytes = (overlayBase64 != null && overlayBase64.isNotEmpty)
+          ? Uint8List.fromList(base64Decode(overlayBase64))
+          : _selectedImageBytes!;
 
       String? scalpUrl = await FirebaseService.uploadBytes(
         'patient_scalp_images/$uid/$reportId.jpg',
-        _selectedImageBytes!,
+        scalpUploadBytes,
         contentType: 'image/jpeg',
       );
 
@@ -130,10 +149,11 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
       final patientGender = genderRaw.isNotEmpty ? genderRaw : 'Not specified';
       final patientAge = profileAge ?? 32;
 
-      final recs = List<String>.from(api['recommendations'] ?? const <String>[]);
-      final conds = List<String>.from(api['conditions'] ?? const <String>[]);
-      final reliability = (api['estimate_reliability_percent'] ?? api['estimateReliabilityPercent'])?.toString() ?? '';
-      final view = (api['view_orientation'] ?? api['viewOrientation'])?.toString() ?? 'Scalp';
+      final recs = List<String>.from(norm['recommendations'] ?? const <String>[]);
+      final conds = List<String>.from(norm['conditions'] ?? const <String>[]);
+      final reliability =
+          (norm['estimate_reliability_percent'] ?? norm['estimateReliabilityPercent'])?.toString() ?? '';
+      final view = (norm['view_orientation'] ?? norm['viewOrientation'])?.toString() ?? 'Scalp';
       String inferLocation(String c) {
         final s = c.toLowerCase();
         if (s.contains('temple') || s.contains('frontal') || s.contains('hairline') || s.contains('front')) {
@@ -158,8 +178,8 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
         });
       }
 
-      final gm = api['graft_min'] ?? api['graftMin'];
-      final gx = api['graft_max'] ?? api['graftMax'];
+      final gm = norm['graft_min'] ?? norm['graftMin'];
+      final gx = norm['graft_max'] ?? norm['graftMax'];
       final graftText = (gm != null && gx != null) ? '$gm - $gx' : 'Not available';
 
       final pdfBytes = await buildScalpAnalysisReportPdf(
@@ -209,7 +229,13 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
         reportPayload: {
           if (pdfUrl != null) 'pdfUrl': pdfUrl,
           if (localFileName != null) 'localPdfFileName': localFileName,
-          if (scalpUrl != null && scalpUrl.isNotEmpty) 'scalpImageUrl': scalpUrl,
+          if (scalpUrl != null && scalpUrl.isNotEmpty) ...{
+            'scalpImageUrl': scalpUrl,
+            'overlayImageUrl': scalpUrl,
+          },
+          'hasAiOverlay': hasAiOverlay,
+          if (overlayLegend is Map) 'overlayLegend': overlayLegend,
+          if (baldRatio != null) 'baldRatio': baldRatio,
           // Keep explicit provenance so report always shows the image tied to this analysis.
           'sourceImageBase64': originalBase64,
           'analyzedImageBase64': analyzedBase64,
@@ -225,6 +251,9 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
           'issues': issues,
           'recommendations': recs,
           'graftEstimateText': graftText,
+          'overlayPipelineVersion': overlayPipelineVersion.isNotEmpty
+              ? overlayPipelineVersion
+              : 'v6_cnn_crown_split',
           'summary': {
             'hairStrength': strength,
             'scalpHealth': scalp,
@@ -238,6 +267,9 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
             'graftMax': gx,
             'viewOrientation': view,
             'estimateReliabilityPercent': reliability,
+            'hasAiOverlay': hasAiOverlay,
+            if (baldRatio != null) 'baldRatio': baldRatio,
+            if (scalpUrl != null && scalpUrl.isNotEmpty) 'overlayImageUrl': scalpUrl,
             if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlay_image_base64': overlayBase64,
             if (overlayBase64 != null && overlayBase64.isNotEmpty) 'overlayImageBase64': overlayBase64,
           },
