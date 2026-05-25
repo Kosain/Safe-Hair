@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:provider/provider.dart';
 import 'core/app_theme.dart';
@@ -6,6 +7,7 @@ import 'core/providers/app_providers.dart';
 import 'core/router.dart';
 import 'firebase_options.dart';
 import 'providers/auth_provider.dart';
+import 'providers/locale_provider.dart';
 import 'providers/theme_provider.dart';
 import 'services/firebase_service.dart';
 
@@ -68,12 +70,32 @@ class _AppRouterHostState extends State<_AppRouterHost> {
   @override
   Widget build(BuildContext context) {
     final theme = context.watch<ThemeProvider>();
+    final locale = context.watch<LocaleProvider>();
     return MaterialApp.router(
       title: 'Safe Hair',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: theme.themeMode,
+      locale: locale.locale,
+      supportedLocales: const [Locale('en'), Locale('ur')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      localeResolutionCallback: (deviceLocale, supported) {
+        final code = locale.languageCode;
+        if (code == 'ur') return const Locale('ur');
+        return const Locale('en');
+      },
+      builder: (context, child) {
+        final isRtl = locale.languageCode == 'ur';
+        return Directionality(
+          textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       routerConfig: _router,
     );
   }

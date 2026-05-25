@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
+import '../l10n/tr.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 import '../utils/dashboard_appointment_reminder.dart';
@@ -243,14 +245,15 @@ class _MetricsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final values = [strength, scalp, damage, fall];
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: sh.border),
         boxShadow: const [
           BoxShadow(color: Color(0x12000000), blurRadius: 14, offset: Offset(0, 4)),
         ],
@@ -258,12 +261,12 @@ class _MetricsCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Your hair health',
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: Colors.black),
+            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: sh.textPrimary),
           ),
           const SizedBox(height: 4),
-          Text(lastScanLine, style: const TextStyle(color: Color(0xFF5D5D5D))),
+          Text(lastScanLine, style: TextStyle(color: sh.textSecondary)),
           const SizedBox(height: 16),
           Row(
             children: List.generate(4, (i) {
@@ -286,15 +289,16 @@ class _MetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final ring = _ringColor(label);
     final progressValue = value != null ? (value!.clamp(0, 100)) / 100.0 : 0.0;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 6),
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.sidebarSelectedBg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: sh.border),
         boxShadow: const [
           BoxShadow(color: Color(0x0A000000), blurRadius: 8, offset: Offset(0, 2)),
         ],
@@ -302,13 +306,13 @@ class _MetricTile extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          Text(label, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: sh.textPrimary)),
           const SizedBox(height: 10),
           Row(
             children: [
               Text(
                 value != null ? '$value%' : '--%',
-                style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w700, height: 0.95),
+                style: TextStyle(fontSize: 42, fontWeight: FontWeight.w700, height: 0.95, color: sh.textPrimary),
               ),
               const Spacer(),
               SizedBox(
@@ -373,12 +377,13 @@ class _ReminderCard extends StatelessWidget {
       line2 = 'Book a consultation from My Appointments.';
     }
 
+    final sh = context.sh;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE9F0EB)),
+        border: Border.all(color: sh.border),
         boxShadow: const [
           BoxShadow(color: Color(0x10000000), blurRadius: 10, offset: Offset(0, 3)),
         ],
@@ -404,15 +409,15 @@ class _ReminderCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              const Expanded(
-                child: Text('Reminder', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+              Expanded(
+                child: Text(context.t('reminder'), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: sh.textPrimary)),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          Text(line1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          Text(line1, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: sh.textPrimary)),
           const SizedBox(height: 4),
-          Text(line2, style: const TextStyle(color: Color(0xFF5F5F5F), height: 1.25)),
+          Text(line2, style: TextStyle(color: sh.textSecondary, height: 1.25)),
         ],
       ),
     );
@@ -460,8 +465,11 @@ class _RoutineCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              const Expanded(
-                child: Text('AI Daily Routine', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+              Expanded(
+                child: Text(
+                  context.t('ai_daily_routine'),
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black),
+                ),
               ),
             ],
           ),
@@ -476,6 +484,17 @@ class _RoutineCard extends StatelessWidget {
   }
 }
 
+double _hairProgressChartWidth(int pointCount) {
+  if (pointCount <= 1) return 600;
+  return (pointCount * 56.0).clamp(600.0, 2400.0);
+}
+
+double _hairProgressLabelInterval(int pointCount) {
+  if (pointCount <= 8) return 1;
+  if (pointCount <= 16) return 2;
+  return (pointCount / 10).ceilToDouble().clamp(2, 12);
+}
+
 class _ChartCard extends StatelessWidget {
   const _ChartCard({required this.scanDocs});
 
@@ -483,14 +502,15 @@ class _ChartCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     if (scanDocs.isEmpty) {
       return Container(
         width: double.infinity,
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: sh.card,
           borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: Colors.grey.shade200),
+          border: Border.all(color: sh.border),
           boxShadow: const [
             BoxShadow(color: Color(0x10000000), blurRadius: 10, offset: Offset(0, 3)),
           ],
@@ -498,19 +518,19 @@ class _ChartCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Hair Health Progress', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+            Text(context.t('hair_health_progress'), style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: context.sh.textPrimary)),
             const SizedBox(height: 14),
             SizedBox(
               height: 260,
               child: Center(
                 child: Text(
                   'No scans yet',
-                  style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+                  style: TextStyle(fontSize: 16, color: sh.textSecondary),
                 ),
               ),
             ),
             const SizedBox(height: 8),
-            const Text('Hair Strength Over Time', style: TextStyle(fontSize: 12, color: Color(0xFF626262))),
+            Text(context.t('hair_strength_over_time'), style: TextStyle(fontSize: 12, color: context.sh.textSecondary)),
           ],
         ),
       );
@@ -545,9 +565,9 @@ class _ChartCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: sh.border),
         boxShadow: const [
           BoxShadow(color: Color(0x10000000), blurRadius: 10, offset: Offset(0, 3)),
         ],
@@ -555,90 +575,105 @@ class _ChartCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Hair Health Progress', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+          Text(context.t('hair_health_progress'), style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: sh.textPrimary)),
           const SizedBox(height: 14),
           SizedBox(
-            height: 260,
-            child: LineChart(
-              LineChartData(
-                minX: 0,
-                maxX: maxX,
-                minY: minY,
-                maxY: maxY,
-                gridData: FlGridData(
-                  drawVerticalLine: false,
-                  horizontalInterval: 10,
-                  getDrawingHorizontalLine: (_) => const FlLine(color: Color(0xFFEDEDED)),
-                ),
-                borderData: FlBorderData(
-                  show: true,
-                  border: const Border(
-                    left: BorderSide(color: Color(0xFFD9D9D9)),
-                    bottom: BorderSide(color: Color(0xFFD9D9D9)),
-                  ),
-                ),
-                titlesData: FlTitlesData(
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 26,
-                      interval: 10,
-                      getTitlesWidget: (v, _) => Text(
-                        v.toInt().toString(),
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF6A6A6A)),
+            height: 280,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: _hairProgressChartWidth(scanDocs.length),
+                height: 280,
+                child: LineChart(
+                  LineChartData(
+                    minX: 0,
+                    maxX: maxX,
+                    minY: minY,
+                    maxY: maxY,
+                    gridData: FlGridData(
+                      drawVerticalLine: false,
+                      horizontalInterval: 10,
+                      getDrawingHorizontalLine: (_) => FlLine(color: sh.border),
+                    ),
+                    borderData: FlBorderData(
+                      show: true,
+                      border: Border(
+                        left: BorderSide(color: sh.border),
+                        bottom: BorderSide(color: sh.border),
                       ),
                     ),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: 1,
-                      getTitlesWidget: (v, _) {
-                        final i = v.toInt();
-                        if (i < 0 || i >= labels.length) return const SizedBox.shrink();
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(labels[i], style: const TextStyle(fontSize: 11, color: Color(0xFF6A6A6A))),
-                        );
-                      },
+                    titlesData: FlTitlesData(
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 26,
+                          interval: 10,
+                          getTitlesWidget: (v, _) => Text(
+                            v.toInt().toString(),
+                            style: TextStyle(fontSize: 11, color: sh.textSecondary),
+                          ),
+                        ),
+                      ),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 40,
+                          interval: _hairProgressLabelInterval(scanDocs.length),
+                          getTitlesWidget: (v, _) {
+                            final i = v.toInt();
+                            if (i < 0 || i >= labels.length) return const SizedBox.shrink();
+                            return Transform.rotate(
+                              angle: -0.4,
+                              alignment: Alignment.topCenter,
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 10),
+                                child: Text(
+                                  labels[i],
+                                  style: TextStyle(fontSize: 10, color: sh.textSecondary),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: spots,
-                    isCurved: true,
-                    color: const Color(0xFF2BAE9E),
-                    barWidth: 3,
-                    dotData: FlDotData(
-                      show: true,
-                      getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
-                        radius: 3.8,
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: spots,
+                        isCurved: true,
                         color: const Color(0xFF2BAE9E),
-                        strokeColor: Colors.white,
-                        strokeWidth: 1.3,
+                        barWidth: 3,
+                        dotData: FlDotData(
+                          show: true,
+                          getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
+                            radius: 3.8,
+                            color: const Color(0xFF2BAE9E),
+                            strokeColor: sh.card,
+                            strokeWidth: 1.3,
+                          ),
+                        ),
+                        belowBarData: BarAreaData(
+                          show: true,
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              const Color(0xFF2BAE9E).withValues(alpha: 0.20),
+                              const Color(0xFF2BAE9E).withValues(alpha: 0.03),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          const Color(0xFF2BAE9E).withValues(alpha: 0.20),
-                          const Color(0xFF2BAE9E).withValues(alpha: 0.03),
-                        ],
-                      ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
           const SizedBox(height: 8),
-          const Text('Hair Strength Over Time', style: TextStyle(fontSize: 12, color: Color(0xFF626262))),
+          Text(context.t('hair_strength_over_time'), style: TextStyle(fontSize: 12, color: sh.textSecondary)),
         ],
       ),
     );

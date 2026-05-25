@@ -34,6 +34,8 @@ import '../screens/web/patient_my_appointments_web.dart';
 import '../screens/web/patient_my_report_web.dart';
 import '../screens/web/patient_my_scans_web.dart';
 import '../screens/gate_screen.dart';
+import '../screens/chat_list_screen.dart';
+import '../screens/chat_detail_screen.dart';
 import '../models/scalp_analysis_model.dart';
 import '../providers/auth_provider.dart';
 
@@ -86,7 +88,7 @@ GoRouter createRouter(AuthProvider authProvider) {
       // Always allow role selection page from intro Skip or manual navigation.
       if (path == '/role') return null;
 
-      // Patient-only feature routes
+      // Patient-only feature routes (/chat-list and /chat/:id are allowed for both roles)
       final isPatientFeatureRoute = path.startsWith('/my-appointments') ||
           path.startsWith('/my-report') ||
           {
@@ -355,6 +357,19 @@ GoRouter createRouter(AuthProvider authProvider) {
       GoRoute(
         path: '/reports',
         builder: (_, __) => const ReportsScreen(),
+      ),
+      GoRoute(
+        path: '/chat-list',
+        builder: (_, __) => const ChatListScreen(),
+      ),
+      GoRoute(
+        path: '/chat/:conversationId',
+        builder: (context, state) {
+          final id = state.pathParameters['conversationId'] ?? '';
+          final extra = state.extra;
+          final name = extra is String ? extra : null;
+          return ChatDetailScreen(conversationId: id, otherUserName: name);
+        },
       ),
     ],
   );

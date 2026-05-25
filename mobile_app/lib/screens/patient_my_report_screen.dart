@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 import '../widgets/patient_web_scaffold.dart';
@@ -73,6 +74,7 @@ class PatientMyReportScreen extends StatelessWidget {
             itemCount: sorted.length,
             separatorBuilder: (_, __) => const SizedBox(height: 10),
             itemBuilder: (context, i) {
+              final sh = context.sh;
               final doc = sorted[i];
               final d = doc.data();
               final created = _reportCreatedAt(d['createdAt']);
@@ -81,10 +83,10 @@ class PatientMyReportScreen extends StatelessWidget {
                   ? '${DateFormat('d MMM y, HH:mm').format(created)} – Avg. score: $avg'
                   : 'Report ${doc.id.substring(0, 8)}… – Avg. score: $avg';
               return Material(
-                color: const Color(0xFFF8F8F8),
+                color: sh.sidebarSelectedBg,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade200),
+                  side: BorderSide(color: sh.border),
                 ),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
@@ -96,18 +98,18 @@ class PatientMyReportScreen extends StatelessWidget {
                         Expanded(
                           child: Text(
                             line,
-                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: sh.textPrimary),
                           ),
                         ),
                         TextButton(
                           onPressed: () => context.push('/my-report/view/${doc.id}'),
                           style: TextButton.styleFrom(
-                            foregroundColor: Colors.black,
+                            foregroundColor: sh.textPrimary,
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             minimumSize: Size.zero,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
-                          child: const Text('View', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                          child: Text('View', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: sh.textPrimary)),
                         ),
                       ],
                     ),
@@ -122,6 +124,7 @@ class PatientMyReportScreen extends StatelessWidget {
       listBody = _EmptyReportsPrompt(onStart: () => context.go('/my-scans'));
     }
 
+    final sh = context.sh;
     return PatientWebScaffold(
       currentRoute: route,
       body: Center(
@@ -131,16 +134,16 @@ class PatientMyReportScreen extends StatelessWidget {
             width: double.infinity,
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: sh.card,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.grey.shade200),
+              border: Border.all(color: sh.border),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'My Reports',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: sh.textPrimary),
                 ),
                 const SizedBox(height: 16),
                 listBody,
@@ -160,17 +163,18 @@ class _EmptyReportsPrompt extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const Icon(Icons.description_outlined, size: 72, color: Color(0xFF7A7A7A)),
+        Icon(Icons.description_outlined, size: 72, color: sh.textSecondary),
         const SizedBox(height: 14),
-        const Text('No report yet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.black)),
+        Text('No report yet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: sh.textPrimary)),
         const SizedBox(height: 8),
-        const Text(
+        Text(
           'Complete a scalp analysis or consultation to generate reports.',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 14, color: Color(0xFF5D5D5D)),
+          style: TextStyle(fontSize: 14, color: sh.textSecondary),
         ),
         const SizedBox(height: 20),
         ElevatedButton(

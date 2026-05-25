@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 import '../widgets/patient_web_scaffold.dart';
@@ -122,6 +123,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
     final uid = context.watch<AuthProvider>().userId;
     final canStream = FirebaseService.isInitialized && uid != null && uid.isNotEmpty;
 
+    final sh = context.sh;
     return PatientWebScaffold(
       currentRoute: GoRouterState.of(context).matchedLocation,
       body: Center(
@@ -138,17 +140,17 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                   width: double.infinity,
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: sh.card,
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.grey.shade200),
+                    border: Border.all(color: sh.border),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
-                          const Expanded(
-                            child: Text('Book a doctor', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                          Expanded(
+                            child: Text('Book a doctor', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: sh.textPrimary)),
                           ),
                           if (canStream)
                             TextButton.icon(
@@ -163,7 +165,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                         canStream
                             ? 'Choose a doctor, then pick date and time on the next screen. Slots already taken are disabled.'
                             : 'Sign in to save bookings to your account and see them above.',
-                        style: TextStyle(fontSize: 13, color: Colors.grey.shade700, height: 1.35),
+                        style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.35),
                       ),
                       const SizedBox(height: 16),
                       if (_loadingDoctors)
@@ -178,7 +180,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                             canStream
                                 ? 'No bookable doctors in Firebase `doctors` yet. Run: py backend\\scripts\\seed_demo_doctors.py — then tap Refresh. (Doctors from your past appointments may appear after the next app update if the list was empty.)'
                                 : 'Enable Firebase and sign in to load doctors you can book.',
-                            style: TextStyle(fontSize: 13, color: Colors.grey.shade700, height: 1.4),
+                            style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.4),
                           ),
                         )
                       else
@@ -190,7 +192,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                         itemBuilder: (context, index) {
                           final d = _bookable[index];
                           return Material(
-                            color: Colors.white,
+                            color: sh.sidebarSelectedBg,
                             borderRadius: BorderRadius.circular(16),
                             child: InkWell(
                               borderRadius: BorderRadius.circular(16),
@@ -200,7 +202,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                 constraints: const BoxConstraints(minHeight: 92),
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: const Color(0xFFEAEAEA)),
+                                  border: Border.all(color: sh.border),
                                   boxShadow: const [
                                     BoxShadow(color: Color(0x0A000000), blurRadius: 8, offset: Offset(0, 2)),
                                   ],
@@ -215,7 +217,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                         d.name.replaceFirst(RegExp(r'^Dr\.\s*', caseSensitive: false), '').isNotEmpty
                                             ? d.name.replaceFirst(RegExp(r'^Dr\.\s*', caseSensitive: false), '')[0]
                                             : 'D',
-                                        style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black),
+                                        style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary),
                                       ),
                                     ),
                                     const SizedBox(width: 12),
@@ -227,14 +229,14 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                             d.name,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: sh.textPrimary),
                                           ),
                                           const SizedBox(height: 2),
                                           Text(
                                             '${d.clinic} • ${d.city}',
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(fontSize: 13, color: Color(0xFF555555)),
+                                            style: TextStyle(fontSize: 13, color: sh.textSecondary),
                                           ),
                                           const SizedBox(height: 3),
                                           Row(
@@ -248,7 +250,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                                 ),
                                               ),
                                               const SizedBox(width: 8),
-                                              Text('${d.rating}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                                              Text('${d.rating}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sh.textPrimary)),
                                             ],
                                           ),
                                           const SizedBox(height: 2),
@@ -256,7 +258,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                             'Consultation Fee: PKR ${d.fee}',
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sh.textPrimary),
                                           ),
                                         ],
                                       ),
@@ -299,18 +301,19 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: sh.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Your upcoming appointments', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          Text('Your upcoming appointments', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: sh.textPrimary)),
           const SizedBox(height: 12),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: FirebaseService.getAppointments(userId),
@@ -340,7 +343,7 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
               if (docs.isEmpty) {
                 return Text(
                   'No saved appointments yet. Book a doctor below.',
-                  style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                  style: TextStyle(fontSize: 13, color: sh.textSecondary),
                 );
               }
               return Column(
@@ -364,14 +367,14 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Material(
-                      color: const Color(0xFFF8F9FB),
+                      color: sh.sidebarSelectedBg,
                       borderRadius: BorderRadius.circular(12),
                       child: ListTile(
                         dense: true,
-                        title: Text(doctor, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                        title: Text(doctor, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: sh.textPrimary)),
                         subtitle: Text(
                           '$date • $time',
-                          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                          style: TextStyle(fontSize: 12, color: sh.textSecondary),
                         ),
                         trailing: Text(
                           statusLabel,

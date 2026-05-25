@@ -2,11 +2,16 @@ import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
+import '../l10n/app_translations.dart';
+import '../l10n/tr.dart';
 import '../providers/auth_provider.dart';
+import '../services/chat_service.dart';
 import '../services/firebase_service.dart';
 import 'scalp_report_detail_screen.dart';
 
@@ -230,6 +235,17 @@ class _DoctorAppointmentsFirestoreState extends State<DoctorAppointmentsFirestor
         return;
       }
       final patientUid = (data['userId'] ?? '').toString();
+      if (patientUid.isNotEmpty) {
+        ChatService.instance.ensureConversationAfterAccept(
+          appointmentId: docId,
+          patientId: patientUid,
+          doctorId: widget.doctorId,
+          patientName: (data['patientName'] ?? 'Patient').toString(),
+          doctorName: (data['doctorName'] ?? 'Your doctor').toString(),
+          date: data['date']?.toString(),
+          timeSlot: (data['timeSlot'] ?? data['time'])?.toString(),
+        );
+      }
       if (patientUid.isNotEmpty) {
         final dn = (data['doctorName'] ?? 'Your doctor').toString();
         final dt = [data['date'], data['timeSlot']].where((e) => e != null && '$e'.trim().isNotEmpty).join(' ').trim();
@@ -463,7 +479,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
       bodyBelowTopBar = Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
         child: doctorId == null || doctorId.isEmpty
-            ? const Center(child: Text('Sign in as a doctor to manage appointments.'))
+            ? Center(child: Text(context.t('sign_in_doctor_appointments'), style: TextStyle(color: context.sh.textPrimary)))
             : DoctorAppointmentsFirestore(doctorId: doctorId),
       );
     } else if (active == 'patients') {
@@ -507,7 +523,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
     }
 
     final scrollBody = Container(
-      color: const Color(0xFFF4F6F8),
+      color: context.sh.scaffold,
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -529,12 +545,13 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
         body: Stack(
           children: [
             Positioned.fill(child: scrollBody),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _DoctorFloatingBottomNav(currentPath: routePath),
-            ),
+            if (!kIsWeb)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _DoctorFloatingBottomNav(currentPath: routePath),
+              ),
           ],
         ),
       );
@@ -551,12 +568,13 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
               ],
             ),
           ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _DoctorFloatingBottomNav(currentPath: routePath),
-          ),
+          if (!kIsWeb)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _DoctorFloatingBottomNav(currentPath: routePath),
+            ),
         ],
       ),
     );
@@ -572,7 +590,8 @@ class _DoctorTopBar extends StatelessWidget {
   final String userName;
   final bool showMenuButton;
 
-  static Widget _brandRow() {
+  static Widget _brandRow(BuildContext context) {
+    final sh = context.sh;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -581,9 +600,9 @@ class _DoctorTopBar extends StatelessWidget {
           child: Image.asset('assets/logo.png', width: 28, height: 28, fit: BoxFit.cover),
         ),
         const SizedBox(width: 8),
-        const Text(
-          'Safe Hair',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black),
+        Text(
+          context.t('app_name'),
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: sh.textPrimary),
         ),
       ],
     );
@@ -591,12 +610,13 @@ class _DoctorTopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Container(
       height: kToolbarHeight,
       padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFE8E8E8))),
+      decoration: BoxDecoration(
+        color: sh.appBar,
+        border: Border(bottom: BorderSide(color: sh.border)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -604,23 +624,23 @@ class _DoctorTopBar extends StatelessWidget {
           if (showMenuButton)
             IconButton(
               onPressed: () => Scaffold.of(context).openDrawer(),
-              icon: const Icon(Icons.menu_rounded, color: Colors.black87),
+              icon: Icon(Icons.menu_rounded, color: context.sh.textPrimary),
             ),
           if (showMenuButton) const SizedBox(width: 2),
           Expanded(
-            child: Center(child: _brandRow()),
+            child: Center(child: _brandRow(context)),
           ),
           PopupMenuButton<String>(
             tooltip: 'Profile',
-            color: Colors.grey.shade100,
-            itemBuilder: (_) => const [
+            color: context.sh.card,
+            itemBuilder: (ctx) => [
               PopupMenuItem<String>(
                 value: 'settings',
-                child: Text('Settings', style: TextStyle(color: Colors.black)),
+                child: Text(ctx.t('settings'), style: TextStyle(color: ctx.sh.textPrimary)),
               ),
               PopupMenuItem<String>(
                 value: 'logout',
-                child: Text('Logout', style: TextStyle(color: Colors.black)),
+                child: Text(ctx.t('logout'), style: TextStyle(color: ctx.sh.textPrimary)),
               ),
             ],
             onSelected: (value) async {
@@ -654,6 +674,9 @@ class _DoctorFloatingBottomNav extends StatelessWidget {
   final String currentPath;
 
   bool _selected(String route) {
+    if (route == '/chat-list') {
+      return currentPath.startsWith('/chat');
+    }
     if (route == '/doctor-profile') {
       return currentPath == '/doctor-profile' || currentPath.startsWith('/doctor-profile/');
     }
@@ -665,12 +688,13 @@ class _DoctorFloatingBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return SafeArea(
       minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Container(
         height: 74,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: sh.navBar,
           borderRadius: BorderRadius.circular(28),
           boxShadow: [
             BoxShadow(
@@ -685,28 +709,40 @@ class _DoctorFloatingBottomNav extends StatelessWidget {
           children: [
             _DoctorNavItem(
               icon: Icons.home_rounded,
-              label: 'Home',
+              label: context.t('nav_home'),
               selected: _selected('/doctor-dashboard'),
               onTap: () => context.go('/doctor-dashboard'),
+              sh: sh,
             ),
             _DoctorNavItem(
               icon: Icons.calendar_month_outlined,
-              label: 'Appointments',
+              label: context.t('nav_appointments'),
               selected: _selected('/doctor-appointments'),
               onTap: () => context.go('/doctor-appointments'),
+              sh: sh,
             ),
             _DoctorNavItem(
               icon: Icons.people_outline,
-              label: 'Patients',
+              label: context.t('nav_patients'),
               selected: _selected('/doctor-patients'),
               onTap: () => context.go('/doctor-patients'),
+              sh: sh,
             ),
             _DoctorNavItem(
               icon: Icons.person_outline,
-              label: 'Profile',
+              label: context.t('profile'),
               selected: _selected('/doctor-profile'),
               onTap: () => context.go('/doctor-profile'),
+              sh: sh,
             ),
+            if (!kIsWeb)
+              _DoctorNavItem(
+                icon: Icons.chat_outlined,
+                label: context.t('nav_chat'),
+                selected: _selected('/chat-list'),
+                onTap: () => context.go('/chat-list'),
+                sh: sh,
+              ),
           ],
         ),
       ),
@@ -720,12 +756,14 @@ class _DoctorNavItem extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.sh,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final SafeHairColors sh;
 
   @override
   Widget build(BuildContext context) {
@@ -742,14 +780,14 @@ class _DoctorNavItem extends StatelessWidget {
               width: 44,
               height: 40,
               decoration: BoxDecoration(
-                color: selected ? const Color(0xFF151515) : Colors.transparent,
+                color: selected ? sh.selectedNavBg : Colors.transparent,
                 borderRadius: BorderRadius.circular(16),
               ),
               alignment: Alignment.center,
               child: Icon(
                 icon,
                 size: 22,
-                color: selected ? Colors.white : Colors.grey.shade600,
+                color: selected ? sh.selectedNavFg : sh.unselectedNavFg,
               ),
             ),
             const SizedBox(height: 2),
@@ -758,7 +796,7 @@ class _DoctorNavItem extends StatelessWidget {
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected ? Colors.black : Colors.grey.shade600,
+                color: selected ? sh.textPrimary : sh.unselectedNavFg,
               ),
             ),
           ],
@@ -776,45 +814,56 @@ class _DoctorSidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return SizedBox(
       width: _width,
       child: Container(
-        color: Colors.white,
+        color: sh.card,
         child: SafeArea(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(18, 18, 18, 16),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
                 child: Row(
                   children: [
-                    CircleAvatar(
+                    const CircleAvatar(
                       radius: 18,
                       backgroundColor: Color(0xFFEFEFEF),
                       child: Image(image: AssetImage('assets/logo.png')),
                     ),
-                    SizedBox(width: 10),
-                    Text('Safe Hair', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black)),
+                    const SizedBox(width: 10),
+                    Text(context.t('app_name'), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: sh.textPrimary)),
                   ],
                 ),
               ),
               _SidebarItem(
                 icon: Icons.dashboard_outlined,
-                label: 'Dashboard',
+                label: context.t('nav_dashboard'),
                 selected: current == 'dashboard',
                 onTap: () => context.go('/doctor-dashboard'),
+                sh: sh,
               ),
               _SidebarItem(
                 icon: Icons.calendar_month_outlined,
-                label: 'Appointments',
+                label: context.t('nav_appointments'),
                 selected: current == 'appointments',
                 onTap: () => context.go('/doctor-appointments'),
+                sh: sh,
               ),
               _SidebarItem(
                 icon: Icons.people_outline,
-                label: 'Patients',
+                label: context.t('nav_patients'),
                 selected: current == 'patients',
                 onTap: () => context.go('/doctor-patients'),
+                sh: sh,
+              ),
+              _SidebarItem(
+                icon: Icons.chat_bubble_outline,
+                label: context.t('nav_my_chats'),
+                selected: GoRouterState.of(context).matchedLocation.startsWith('/chat'),
+                onTap: () => context.go('/chat-list'),
+                sh: sh,
               ),
             ],
           ),
@@ -830,19 +879,21 @@ class _SidebarItem extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.sh,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final SafeHairColors sh;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       child: Material(
-        color: selected ? const Color(0xFFF0F0F0) : Colors.transparent,
+        color: selected ? sh.sidebarSelectedBg : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -851,12 +902,12 @@ class _SidebarItem extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             child: Row(
               children: [
-                Icon(icon, color: Colors.black87),
+                Icon(icon, color: sh.icon),
                 const SizedBox(width: 12),
                 Text(
                   label,
                   style: TextStyle(
-                    color: Colors.black,
+                    color: sh.textPrimary,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),
@@ -926,25 +977,26 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 12, offset: Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Upcoming Appointments', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+          Text(context.t('upcoming_appointments'), style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: sh.textPrimary)),
           const SizedBox(height: 12),
           SizedBox(
             height: 102,
             child: items.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
                       'No appointments yet',
-                      style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.w600),
+                      style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600),
                     ),
                   )
                 : ListView.separated(
@@ -957,9 +1009,9 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                   width: 220,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF9FAFB),
+                    color: sh.sidebarSelectedBg,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFE5E7EB)),
+                    border: Border.all(color: sh.border),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -972,7 +1024,7 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                             child: _DoctorPatientTitle(
                               fallback: item.$1,
                               userId: item.$5,
-                              style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black),
+                              style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary),
                             ),
                           ),
                           const SizedBox(width: 6),
@@ -1012,22 +1064,22 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                       const SizedBox(height: 8),
                       Row(
                         children: [
-                          const Icon(Icons.access_time, size: 16, color: Color(0xFF6B7280)),
+                          Icon(Icons.access_time, size: 16, color: sh.textSecondary),
                           const SizedBox(width: 6),
-                          Expanded(child: Text(item.$2, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)))),
+                          Expanded(child: Text(item.$2, style: TextStyle(fontSize: 12, color: sh.textSecondary))),
                         ],
                       ),
                       const SizedBox(height: 4),
                       Row(
                         children: [
-                          const Icon(Icons.medical_information_outlined, size: 16, color: Color(0xFF6B7280)),
+                          Icon(Icons.medical_information_outlined, size: 16, color: sh.textSecondary),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
                               item.$3,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+                              style: TextStyle(fontSize: 12, color: sh.textSecondary),
                             ),
                           ),
                         ],
@@ -1071,6 +1123,7 @@ class _AppointmentTrendCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     if (points.isEmpty) return const SizedBox.shrink();
     final spots = [for (var i = 0; i < points.length; i++) FlSpot(i.toDouble(), points[i].$2.toDouble())];
     var minY = points.map((e) => e.$2).reduce(math.min).toDouble();
@@ -1085,14 +1138,14 @@ class _AppointmentTrendCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 12, offset: Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Appointment Trends', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+          Text(context.t('appointment_trends'), style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: sh.textPrimary)),
           const SizedBox(height: 12),
           SizedBox(
             height: 220,
@@ -1102,7 +1155,12 @@ class _AppointmentTrendCard extends StatelessWidget {
                 maxX: (points.length - 1).toDouble(),
                 minY: minY,
                 maxY: maxY,
-                gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 5),
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  horizontalInterval: 5,
+                  getDrawingHorizontalLine: (_) => FlLine(color: sh.border),
+                ),
                 titlesData: FlTitlesData(
                   topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -1112,7 +1170,7 @@ class _AppointmentTrendCard extends StatelessWidget {
                       reservedSize: 32,
                       getTitlesWidget: (value, meta) => Text(
                         value.toInt().toString(),
-                        style: const TextStyle(fontSize: 10, color: Color(0xFF6B7280)),
+                        style: TextStyle(fontSize: 10, color: sh.textSecondary),
                       ),
                     ),
                   ),
@@ -1124,7 +1182,7 @@ class _AppointmentTrendCard extends StatelessWidget {
                         if (idx < 0 || idx >= points.length) return const SizedBox.shrink();
                         return Padding(
                           padding: const EdgeInsets.only(top: 6),
-                          child: Text(points[idx].$1, style: const TextStyle(fontSize: 11, color: Color(0xFF4B5563))),
+                          child: Text(points[idx].$1, style: TextStyle(fontSize: 11, color: sh.textSecondary)),
                         );
                       },
                     ),
@@ -1179,11 +1237,14 @@ class _StatCard extends StatelessWidget {
 
     final c = iconTint(stat.title);
     final bg = iconBg(stat.title);
+    final sh = context.sh;
+    final titleKey = AppTranslations.statTitleKey(stat.title);
+    final localizedTitle = titleKey.startsWith('stat_') ? context.t(titleKey) : stat.title;
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 12, offset: Offset(0, 4))],
       ),
@@ -1194,33 +1255,58 @@ class _StatCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   color: bg,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(iconFor(stat.title), color: c, size: 22),
+                child: Icon(iconFor(stat.title), color: c, size: 20),
               ),
-              const Spacer(),
-              Text(
-                stat.value,
-                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: Colors.black),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      stat.value,
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: sh.textPrimary),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Text(stat.title, style: const TextStyle(fontSize: 14, color: Colors.black, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
+          Text(
+            localizedTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: sh.textPrimary, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
           Row(
             children: [
               if (stat.change.trim().isNotEmpty) ...[
-                Icon(stat.positive ? Icons.trending_up : Icons.trending_down, color: trendColor, size: 18),
+                Icon(stat.positive ? Icons.trending_up : Icons.trending_down, color: trendColor, size: 16),
                 const SizedBox(width: 2),
-                Text(stat.change, style: TextStyle(color: trendColor, fontWeight: FontWeight.w700, fontSize: 13)),
+                Flexible(
+                  child: Text(
+                    stat.change,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: trendColor, fontWeight: FontWeight.w700, fontSize: 11),
+                  ),
+                ),
               ] else
-                Text(
-                  'Live from your bookings',
-                  style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600, fontSize: 12),
+                Flexible(
+                  child: Text(
+                    context.t('live_from_bookings'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600, fontSize: 11),
+                  ),
                 ),
             ],
           ),
@@ -1243,18 +1329,19 @@ class _AgePieCardState extends State<_AgePieCard> {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final ageGroups = widget.ageGroups;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 12, offset: Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Patient Age Groups', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          Text(context.t('patient_age_groups'), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: sh.textPrimary)),
           const SizedBox(height: 12),
           SizedBox(
             height: 260,
@@ -1289,7 +1376,7 @@ class _AgePieCardState extends State<_AgePieCard> {
                       titleStyle: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
-                        fontSize: touched ? 10 : 12,
+                        fontSize: touched ? 9 : 10,
                       ),
                     );
                   },
@@ -1308,7 +1395,7 @@ class _AgePieCardState extends State<_AgePieCard> {
                   Expanded(
                     child: Text(
                       '${g.title}: ${g.count} (${g.percent}%)',
-                      style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF374151)),
+                      style: TextStyle(fontWeight: FontWeight.w600, color: sh.textPrimary),
                     ),
                   ),
                 ],
@@ -1336,6 +1423,7 @@ class _DoctorAppointmentsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return DefaultTabController(
       length: 2,
       initialIndex: 0,
@@ -1343,16 +1431,16 @@ class _DoctorAppointmentsPage extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Material(
-            color: Colors.white,
+            color: sh.card,
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Color(0xFFE5E7EB)),
+              side: BorderSide(color: sh.border),
             ),
             child: TabBar(
               indicator: const BoxDecoration(),
-              labelColor: Colors.black,
-              unselectedLabelColor: const Color(0xFF6B7280),
+              labelColor: sh.textPrimary,
+              unselectedLabelColor: sh.textSecondary,
               dividerColor: Colors.transparent,
               dividerHeight: 0,
               labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
@@ -1391,11 +1479,12 @@ class _AppointmentRequestsList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     if (pending.isEmpty) {
-      return const Center(
+      return Center(
         child: Text(
           'No pending requests',
-          style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.w600, fontSize: 15),
+          style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600, fontSize: 15),
         ),
       );
     }
@@ -1409,9 +1498,9 @@ class _AppointmentRequestsList extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: const Color(0xFFF9FAFB),
+              color: sh.card,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE5E7EB)),
+              border: Border.all(color: sh.border),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1423,18 +1512,18 @@ class _AppointmentRequestsList extends StatelessWidget {
                       _DoctorPatientTitle(
                         fallback: r.patientName,
                         userId: r.patientUserId,
-                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.black),
+                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: sh.textPrimary),
                       ),
                       const SizedBox(height: 10),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.access_time, size: 18, color: Color(0xFF6B7280)),
+                          Icon(Icons.access_time, size: 18, color: sh.textSecondary),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               r.dateTimeLabel,
-                              style: const TextStyle(fontSize: 13, color: Color(0xFF374151), height: 1.3),
+                              style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.3),
                             ),
                           ),
                         ],
@@ -1443,12 +1532,12 @@ class _AppointmentRequestsList extends StatelessWidget {
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.medical_information_outlined, size: 18, color: Color(0xFF6B7280)),
+                          Icon(Icons.medical_information_outlined, size: 18, color: sh.textSecondary),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               r.reason,
-                              style: const TextStyle(fontSize: 13, color: Color(0xFF374151), height: 1.3),
+                              style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.3),
                             ),
                           ),
                         ],
@@ -1469,7 +1558,7 @@ class _AppointmentRequestsList extends StatelessWidget {
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white,
+                            color: sh.sidebarSelectedBg,
                             shape: BoxShape.circle,
                             border: Border.all(color: Colors.green.shade300, width: 1.5),
                           ),
@@ -1488,7 +1577,7 @@ class _AppointmentRequestsList extends StatelessWidget {
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white,
+                            color: sh.sidebarSelectedBg,
                             shape: BoxShape.circle,
                             border: Border.all(color: Colors.red.shade300, width: 1.5),
                           ),
@@ -1515,11 +1604,12 @@ class _AppointmentUpcomingList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     if (confirmed.isEmpty) {
-      return const Center(
+      return Center(
         child: Text(
           'No upcoming appointments',
-          style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.w600, fontSize: 15),
+          style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600, fontSize: 15),
         ),
       );
     }
@@ -1533,9 +1623,9 @@ class _AppointmentUpcomingList extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: const Color(0xFFF9FAFB),
+              color: sh.card,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE5E7EB)),
+              border: Border.all(color: sh.border),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1544,10 +1634,10 @@ class _AppointmentUpcomingList extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child:                       _DoctorPatientTitle(
+                      child: _DoctorPatientTitle(
                         fallback: a.patientName,
                         userId: a.patientUserId,
-                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.black),
+                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: sh.textPrimary),
                       ),
                     ),
                     const SizedBox(width: 6),
@@ -1556,8 +1646,8 @@ class _AppointmentUpcomingList extends StatelessWidget {
                       height: 30,
                       child: TextButton(
                         style: TextButton.styleFrom(
-                          backgroundColor: Colors.black,
-                          foregroundColor: Colors.white,
+                          backgroundColor: sh.selectedNavBg,
+                          foregroundColor: sh.selectedNavFg,
                           padding: EdgeInsets.zero,
                           minimumSize: const Size(60, 30),
                           fixedSize: const Size(60, 30),
@@ -1588,12 +1678,12 @@ class _AppointmentUpcomingList extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.access_time, size: 18, color: Color(0xFF6B7280)),
+                    Icon(Icons.access_time, size: 18, color: sh.textSecondary),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         a.dateTimeLabel,
-                        style: const TextStyle(fontSize: 13, color: Color(0xFF374151), height: 1.3),
+                        style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.3),
                       ),
                     ),
                   ],
@@ -1602,12 +1692,12 @@ class _AppointmentUpcomingList extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.medical_information_outlined, size: 18, color: Color(0xFF6B7280)),
+                    Icon(Icons.medical_information_outlined, size: 18, color: sh.textSecondary),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         a.reason,
-                        style: const TextStyle(fontSize: 13, color: Color(0xFF374151), height: 1.3),
+                        style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.3),
                       ),
                     ),
                   ],
@@ -1647,24 +1737,26 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         TextField(
           controller: _search,
           onChanged: (_) => setState(() {}),
+          style: TextStyle(color: sh.textPrimary),
           decoration: InputDecoration(
             hintText: 'Search by name or phone...',
-            hintStyle: TextStyle(color: Colors.grey.shade400),
-            prefixIcon: const Icon(Icons.search, color: Color(0xFF6B7280)),
+            hintStyle: TextStyle(color: sh.textSecondary),
+            prefixIcon: Icon(Icons.search, color: sh.textSecondary),
             filled: true,
-            fillColor: Colors.white,
+            fillColor: sh.card,
             contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFE5E7EB))),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFE5E7EB))),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF111111)),
+              borderSide: BorderSide(color: sh.textPrimary),
             ),
           ),
         ),
@@ -1679,9 +1771,9 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: sh.card,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFE5E7EB)),
+                  border: Border.all(color: sh.border),
                   boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 8, offset: Offset(0, 2))],
                 ),
                 child: Row(
@@ -1692,13 +1784,13 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
                       height: 40,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: sh.sidebarSelectedBg,
                         shape: BoxShape.circle,
-                        border: Border.all(color: Colors.grey.shade300),
+                        border: Border.all(color: sh.border),
                       ),
                       child: Text(
                         p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
-                        style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.w600),
+                        style: TextStyle(color: sh.textPrimary, fontWeight: FontWeight.w600),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1706,12 +1798,12 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(p.name, style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black)),
+                          Text(p.name, style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary)),
                           const SizedBox(height: 4),
-                          Text(p.phone, style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
+                          Text(p.phone, style: TextStyle(color: sh.textSecondary, fontSize: 13)),
                           const SizedBox(height: 2),
                           Text('Last visit: ${p.lastVisit} • ${p.consultations} consultation(s)',
-                              style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12)),
+                              style: TextStyle(color: sh.textSecondary, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -1720,13 +1812,13 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
                       height: 30,
                       child: TextButton(
                         style: TextButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
+                          backgroundColor: sh.sidebarSelectedBg,
+                          foregroundColor: sh.textPrimary,
                           padding: EdgeInsets.zero,
                           minimumSize: const Size(88, 30),
                           fixedSize: const Size(88, 30),
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          side: BorderSide(color: Colors.grey.shade300),
+                          side: BorderSide(color: sh.border),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                         onPressed: () {

@@ -3,12 +3,15 @@ import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
+import '../../core/safe_hair_colors.dart';
+import '../../l10n/tr.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/firebase_service.dart';
 import '../../utils/dashboard_appointment_reminder.dart';
@@ -181,9 +184,9 @@ class _MobileDashboardScreenState extends State<MobileDashboardScreen> {
               tooltip: 'Profile actions',
               color: Colors.grey.shade100,
               onSelected: _onProfileAction,
-              itemBuilder: (_) => const [
-                PopupMenuItem<String>(value: 'settings', child: Text('Settings', style: TextStyle(color: Colors.black))),
-                PopupMenuItem<String>(value: 'logout', child: Text('Logout', style: TextStyle(color: Colors.black))),
+              itemBuilder: (ctx) => [
+                PopupMenuItem<String>(value: 'settings', child: Text(ctx.t('settings'), style: TextStyle(color: ctx.sh.textPrimary))),
+                PopupMenuItem<String>(value: 'logout', child: Text(ctx.t('logout'), style: TextStyle(color: ctx.sh.textPrimary))),
               ],
               child: CircleAvatar(
                 radius: 18,
@@ -345,7 +348,12 @@ class _MobileDashboardDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final currentRoute = GoRouterState.of(context).matchedLocation;
-    bool selected(String route) => currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    bool selected(String route) {
+      if (route == '/chat-list') {
+        return currentRoute == '/chat-list' || currentRoute.startsWith('/chat/');
+      }
+      return currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    }
 
     return Drawer(
       backgroundColor: Colors.white,
@@ -379,7 +387,7 @@ class _MobileDashboardDrawer extends StatelessWidget {
             ),
             ListTile(
               leading: const Icon(Icons.dashboard_outlined, color: Colors.black),
-              title: const Text('Dashboard', style: TextStyle(color: Colors.black)),
+              title: Text(context.t('nav_dashboard'), style: TextStyle(color: context.sh.textPrimary)),
               selected: selected('/dashboard'),
               selectedTileColor: const Color(0xFFF0F0F0),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -390,7 +398,7 @@ class _MobileDashboardDrawer extends StatelessWidget {
             ),
             ListTile(
               leading: const Icon(Icons.document_scanner_outlined, color: Colors.black),
-              title: const Text('My Scans', style: TextStyle(color: Colors.black)),
+              title: Text(context.t('nav_my_scans'), style: TextStyle(color: context.sh.textPrimary)),
               selected: selected('/my-scans'),
               selectedTileColor: const Color(0xFFF0F0F0),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -401,7 +409,7 @@ class _MobileDashboardDrawer extends StatelessWidget {
             ),
             ListTile(
               leading: const Icon(Icons.calendar_month_outlined, color: Colors.black),
-              title: const Text('My Appointments', style: TextStyle(color: Colors.black)),
+              title: Text(context.t('nav_my_appointments'), style: TextStyle(color: context.sh.textPrimary)),
               selected: selected('/my-appointments'),
               selectedTileColor: const Color(0xFFF0F0F0),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -412,13 +420,24 @@ class _MobileDashboardDrawer extends StatelessWidget {
             ),
             ListTile(
               leading: const Icon(Icons.description_outlined, color: Colors.black),
-              title: const Text('My Reports', style: TextStyle(color: Colors.black)),
+              title: Text(context.t('nav_my_reports'), style: TextStyle(color: context.sh.textPrimary)),
               selected: selected('/my-report'),
               selectedTileColor: const Color(0xFFF0F0F0),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               onTap: () {
                 Navigator.pop(context);
                 context.go('/my-report');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_bubble_outline, color: Colors.black),
+              title: Text(context.t('nav_my_chats'), style: TextStyle(color: context.sh.textPrimary)),
+              selected: selected('/chat-list'),
+              selectedTileColor: const Color(0xFFF0F0F0),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              onTap: () {
+                Navigator.pop(context);
+                context.go('/chat-list');
               },
             ),
           ],
@@ -745,6 +764,17 @@ class _MetricMiniCard extends StatelessWidget {
   }
 }
 
+double _mobileHairProgressChartWidth(int pointCount) {
+  if (pointCount <= 1) return 600;
+  return (pointCount * 56.0).clamp(600.0, 2400.0);
+}
+
+double _mobileHairProgressLabelInterval(int pointCount) {
+  if (pointCount <= 8) return 1;
+  if (pointCount <= 16) return 2;
+  return (pointCount / 10).ceilToDouble().clamp(2, 12);
+}
+
 class _HairHealthProgressCard extends StatelessWidget {
   const _HairHealthProgressCard({required this.scanDocs});
 
@@ -858,107 +888,118 @@ class _HairHealthProgressCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           SizedBox(
-            height: 210,
-            child: LineChart(
-              LineChartData(
-                minY: minY,
-                maxY: maxY,
-                minX: 0,
-                maxX: maxX,
-                lineTouchData: LineTouchData(
-                  enabled: true,
-                  touchTooltipData: LineTouchTooltipData(
-                    getTooltipItems: (touchedSpots) {
-                      return touchedSpots.map((spot) {
-                        final index = spot.x.toInt();
-                        final label = index >= 0 && index < labels.length ? labels[index] : '';
-                        return LineTooltipItem(
-                          '$label\n${spot.y.toInt()}',
-                          const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                        );
-                      }).toList();
-                    },
-                  ),
-                ),
-                gridData: FlGridData(
-                  drawVerticalLine: false,
-                  horizontalInterval: 10,
-                  getDrawingHorizontalLine: (value) => FlLine(
-                    color: const Color(0xFFECEFF1),
-                    strokeWidth: 1,
-                  ),
-                ),
-                borderData: FlBorderData(
-                  show: true,
-                  border: const Border(
-                    left: BorderSide(color: Color(0xFFE0E0E0)),
-                    bottom: BorderSide(color: Color(0xFFE0E0E0)),
-                    top: BorderSide.none,
-                    right: BorderSide.none,
-                  ),
-                ),
-                titlesData: FlTitlesData(
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: 10,
-                      reservedSize: 30,
-                      getTitlesWidget: (value, meta) => Text(
-                        value.toInt().toString(),
-                        style: const TextStyle(fontSize: 10, color: Color(0xFF7A7A7A)),
+            height: 230,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: _mobileHairProgressChartWidth(scanDocs.length),
+                height: 230,
+                child: LineChart(
+                  LineChartData(
+                    minY: minY,
+                    maxY: maxY,
+                    minX: 0,
+                    maxX: maxX,
+                    lineTouchData: LineTouchData(
+                      enabled: true,
+                      touchTooltipData: LineTouchTooltipData(
+                        getTooltipItems: (touchedSpots) {
+                          return touchedSpots.map((spot) {
+                            final index = spot.x.toInt();
+                            final label = index >= 0 && index < labels.length ? labels[index] : '';
+                            return LineTooltipItem(
+                              '$label\n${spot.y.toInt()}',
+                              const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                            );
+                          }).toList();
+                        },
                       ),
                     ),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: 1,
-                      reservedSize: 28,
-                      getTitlesWidget: (value, meta) {
-                        final index = value.toInt();
-                        if (index < 0 || index >= labels.length) return const SizedBox.shrink();
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(
-                            labels[index],
+                    gridData: FlGridData(
+                      drawVerticalLine: false,
+                      horizontalInterval: 10,
+                      getDrawingHorizontalLine: (value) => FlLine(
+                        color: const Color(0xFFECEFF1),
+                        strokeWidth: 1,
+                      ),
+                    ),
+                    borderData: FlBorderData(
+                      show: true,
+                      border: const Border(
+                        left: BorderSide(color: Color(0xFFE0E0E0)),
+                        bottom: BorderSide(color: Color(0xFFE0E0E0)),
+                        top: BorderSide.none,
+                        right: BorderSide.none,
+                      ),
+                    ),
+                    titlesData: FlTitlesData(
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          interval: 10,
+                          reservedSize: 30,
+                          getTitlesWidget: (value, meta) => Text(
+                            value.toInt().toString(),
                             style: const TextStyle(fontSize: 10, color: Color(0xFF7A7A7A)),
                           ),
-                        );
-                      },
+                        ),
+                      ),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 38,
+                          interval: _mobileHairProgressLabelInterval(scanDocs.length),
+                          getTitlesWidget: (value, meta) {
+                            final index = value.toInt();
+                            if (index < 0 || index >= labels.length) return const SizedBox.shrink();
+                            return Transform.rotate(
+                              angle: -0.4,
+                              alignment: Alignment.topCenter,
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Text(
+                                  labels[index],
+                                  style: const TextStyle(fontSize: 10, color: Color(0xFF7A7A7A)),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ),
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: spots,
+                        isCurved: true,
+                        color: const Color(0xFF2BAE9E),
+                        barWidth: 3,
+                        isStrokeCapRound: true,
+                        belowBarData: BarAreaData(
+                          show: true,
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              const Color(0xFF2BAE9E).withValues(alpha: 0.22),
+                              const Color(0xFF2BAE9E).withValues(alpha: 0.02),
+                            ],
+                          ),
+                        ),
+                        dotData: FlDotData(
+                          show: true,
+                          getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
+                            radius: 3.6,
+                            color: const Color(0xFF2BAE9E),
+                            strokeColor: Colors.white,
+                            strokeWidth: 1.5,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: spots,
-                    isCurved: true,
-                    color: const Color(0xFF2BAE9E),
-                    barWidth: 3,
-                    isStrokeCapRound: true,
-                    belowBarData: BarAreaData(
-                      show: true,
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          const Color(0xFF2BAE9E).withValues(alpha: 0.22),
-                          const Color(0xFF2BAE9E).withValues(alpha: 0.02),
-                        ],
-                      ),
-                    ),
-                    dotData: FlDotData(
-                      show: true,
-                      getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
-                        radius: 3.6,
-                        color: const Color(0xFF2BAE9E),
-                        strokeColor: Colors.white,
-                        strokeWidth: 1.5,
-                      ),
-                    ),
-                  ),
-                ],
               ),
             ),
           ),
@@ -987,7 +1028,12 @@ class _PatientFloatingBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool selected(String route) => currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    bool selected(String route) {
+      if (route == '/chat-list') {
+        return currentRoute == '/chat-list' || currentRoute.startsWith('/chat/');
+      }
+      return currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    }
 
     return SafeArea(
       minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -1027,6 +1073,12 @@ class _PatientFloatingBottomNav extends StatelessWidget {
               selected: selected('/my-report'),
               onTap: () => context.go('/my-report'),
             ),
+            if (!kIsWeb)
+              _BottomNavItem(
+                icon: Icons.chat_outlined,
+                selected: selected('/chat-list'),
+                onTap: () => context.go('/chat-list'),
+              ),
           ],
         ),
       ),
@@ -1051,7 +1103,7 @@ class _BottomNavItem extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       onTap: onTap,
       child: Container(
-        width: 56,
+        width: 50,
         height: 48,
         decoration: BoxDecoration(
           color: selected ? const Color(0xFF151515) : Colors.transparent,

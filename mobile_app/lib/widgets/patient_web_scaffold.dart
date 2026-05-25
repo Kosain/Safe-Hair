@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
+import '../l10n/tr.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 
@@ -33,8 +36,10 @@ class PatientWebScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final auth = context.watch<AuthProvider>();
     final name = auth.userName ?? 'User';
+    final scaffoldBg = Theme.of(context).brightness == Brightness.dark ? sh.scaffold : backgroundColor;
     final photoUrl = auth.userPhotoUrl;
     final photoBytes = auth.userPhotoBytes;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -60,7 +65,7 @@ class PatientWebScaffold extends StatelessWidget {
     }
 
     final content = Container(
-      color: backgroundColor,
+      color: scaffoldBg,
       child: Column(
         children: [
           _TopProfileBar(name: name, photoUrl: photoUrl, photoBytes: photoBytes),
@@ -159,12 +164,13 @@ class _TopProfileBarState extends State<_TopProfileBar> {
     final effectivePhotoUrl =
         (_patientImageUrl != null && _patientImageUrl!.isNotEmpty) ? _patientImageUrl : widget.photoUrl;
     final effectivePhotoBytes = _patientImageBytes ?? widget.photoBytes;
+    final sh = context.sh;
     return Container(
       height: 64 + (isDesktop ? 0 : topInset),
       padding: EdgeInsets.fromLTRB(16, isDesktop ? 0 : topInset, 16, 0),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFEDEDED))),
+      decoration: BoxDecoration(
+        color: sh.card,
+        border: Border(bottom: BorderSide(color: sh.border)),
       ),
       child: Row(
         children: [
@@ -172,15 +178,21 @@ class _TopProfileBarState extends State<_TopProfileBar> {
             Builder(
               builder: (ctx) => IconButton(
                 onPressed: () => Scaffold.of(ctx).openDrawer(),
-                icon: const Icon(Icons.menu_rounded, color: Colors.black),
+                icon: Icon(Icons.menu_rounded, color: context.sh.textPrimary),
               ),
             ),
           const Spacer(),
           PopupMenuButton<String>(
-            color: Colors.grey.shade100,
-            itemBuilder: (_) => const [
-              PopupMenuItem<String>(value: 'settings', child: Text('Settings', style: TextStyle(color: Colors.black))),
-              PopupMenuItem<String>(value: 'logout', child: Text('Logout', style: TextStyle(color: Colors.black))),
+            color: context.sh.card,
+            itemBuilder: (ctx) => [
+              PopupMenuItem<String>(
+                value: 'settings',
+                child: Text(ctx.t('settings'), style: TextStyle(color: ctx.sh.textPrimary)),
+              ),
+              PopupMenuItem<String>(
+                value: 'logout',
+                child: Text(ctx.t('logout'), style: TextStyle(color: ctx.sh.textPrimary)),
+              ),
             ],
             onSelected: (value) async {
               if (value == 'settings') {
@@ -223,34 +235,41 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final items = <(String, IconData, String)>[
-      ('Dashboard', Icons.dashboard_outlined, '/dashboard'),
-      ('My Scans', Icons.document_scanner_outlined, '/my-scans'),
-      ('My Appointments', Icons.calendar_month_outlined, '/my-appointments'),
-      ('My Reports', Icons.description_outlined, '/my-report'),
+      (context.t('nav_dashboard'), Icons.dashboard_outlined, '/dashboard'),
+      (context.t('nav_my_scans'), Icons.document_scanner_outlined, '/my-scans'),
+      (context.t('nav_my_appointments'), Icons.calendar_month_outlined, '/my-appointments'),
+      (context.t('nav_my_reports'), Icons.description_outlined, '/my-report'),
+      (context.t('nav_my_chats'), Icons.chat_bubble_outline, '/chat-list'),
     ];
 
-    bool isSelected(String route) => currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    bool isSelected(String route) {
+      if (route == '/chat-list') {
+        return currentRoute == '/chat-list' || currentRoute.startsWith('/chat/');
+      }
+      return currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    }
 
     final panel = Container(
-      color: Colors.white,
+      color: sh.card,
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(18, 18, 18, 16),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
               child: Row(
                 children: [
-                  CircleAvatar(
+                  const CircleAvatar(
                     radius: 18,
                     backgroundColor: Color(0xFFEFEFEF),
                     child: Image(image: AssetImage('assets/logo.png')),
                   ),
-                  SizedBox(width: 10),
+                  const SizedBox(width: 10),
                   Text(
-                    'Safe Hair',
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black),
+                    context.t('app_name'),
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: sh.textPrimary),
                   ),
                 ],
               ),
@@ -261,7 +280,7 @@ class _Sidebar extends StatelessWidget {
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                 child: Material(
-                  color: selected ? const Color(0xFFF0F0F0) : Colors.transparent,
+                  color: selected ? sh.sidebarSelectedBg : Colors.transparent,
                   borderRadius: BorderRadius.circular(12),
                   child: InkWell(
                     borderRadius: BorderRadius.circular(12),
@@ -273,12 +292,12 @@ class _Sidebar extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                       child: Row(
                         children: [
-                          Icon(item.$2, color: Colors.black87),
+                          Icon(item.$2, color: sh.icon),
                           const SizedBox(width: 12),
                           Text(
                             item.$1,
                             style: TextStyle(
-                              color: Colors.black,
+                              color: sh.textPrimary,
                               fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                             ),
                           ),
@@ -306,14 +325,20 @@ class _PatientFloatingBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool selected(String route) => currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    bool selected(String route) {
+      if (route == '/chat-list') {
+        return currentRoute == '/chat-list' || currentRoute.startsWith('/chat/');
+      }
+      return currentRoute == route || (route != '/dashboard' && currentRoute.startsWith(route));
+    }
 
+    final sh = context.sh;
     return SafeArea(
       minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Container(
         height: 74,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: sh.navBar,
           borderRadius: BorderRadius.circular(28),
           boxShadow: [
             BoxShadow(
@@ -330,22 +355,33 @@ class _PatientFloatingBottomNav extends StatelessWidget {
               icon: Icons.home_rounded,
               selected: selected('/dashboard'),
               onTap: () => context.go('/dashboard'),
+              sh: sh,
             ),
             _BottomNavItem(
               icon: Icons.crop_free_rounded,
               selected: selected('/my-scans'),
               onTap: () => context.go('/my-scans'),
+              sh: sh,
             ),
             _BottomNavItem(
               icon: Icons.calendar_month_outlined,
               selected: selected('/my-appointments'),
               onTap: () => context.go('/my-appointments'),
+              sh: sh,
             ),
             _BottomNavItem(
               icon: Icons.description_outlined,
               selected: selected('/my-report'),
               onTap: () => context.go('/my-report'),
+              sh: sh,
             ),
+            if (!kIsWeb)
+              _BottomNavItem(
+                icon: Icons.chat_outlined,
+                selected: selected('/chat-list'),
+                onTap: () => context.go('/chat-list'),
+                sh: sh,
+              ),
           ],
         ),
       ),
@@ -358,11 +394,13 @@ class _BottomNavItem extends StatelessWidget {
     required this.icon,
     required this.selected,
     required this.onTap,
+    required this.sh,
   });
 
   final IconData icon;
   final bool selected;
   final VoidCallback onTap;
+  final SafeHairColors sh;
 
   @override
   Widget build(BuildContext context) {
@@ -370,17 +408,17 @@ class _BottomNavItem extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       onTap: onTap,
       child: Container(
-        width: 56,
+        width: 50,
         height: 48,
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF151515) : Colors.transparent,
+          color: selected ? sh.selectedNavBg : Colors.transparent,
           borderRadius: BorderRadius.circular(18),
         ),
         alignment: Alignment.center,
         child: Icon(
           icon,
           size: 24,
-          color: selected ? Colors.white : Colors.grey.shade600,
+          color: selected ? sh.selectedNavFg : sh.unselectedNavFg,
         ),
       ),
     );

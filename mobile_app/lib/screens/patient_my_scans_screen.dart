@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../services/firebase_service.dart';
@@ -305,6 +306,7 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final hasImage = _selectedImageBytes != null;
     final canAnalyze = hasImage && !_analyzing;
 
@@ -316,9 +318,9 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
           child: Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: sh.card,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.grey.shade200),
+              border: Border.all(color: sh.border),
               boxShadow: const [
                 BoxShadow(
                   color: Color(0x12000000),
@@ -330,14 +332,14 @@ class _PatientMyScansScreenState extends State<PatientMyScansScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Get Your AI Scalp Analysis',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: sh.textPrimary),
                 ),
                 const SizedBox(height: 10),
-                const Text(
+                Text(
                   'Capture a clear image of your scalp. Our AI analyzes hair strength, scalp health, density, and moisture to provide personalized recommendations.',
-                  style: TextStyle(fontSize: 14, color: Color(0xFF666666), height: 1.35),
+                  style: TextStyle(fontSize: 14, color: sh.textSecondary, height: 1.35),
                 ),
                 const SizedBox(height: 20),
                 Center(

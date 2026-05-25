@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
+import 'safe_hair_colors.dart';
 
 class AppTheme {
   static ThemeData get lightTheme {
     return ThemeData(
       useMaterial3: true,
+      brightness: Brightness.light,
+      extensions: const [SafeHairColors.light],
       colorScheme: ColorScheme.light(
         primary: AppColors.primaryGreen,
         surface: AppColors.primaryGreen,
@@ -52,20 +55,39 @@ class AppTheme {
   static ThemeData get darkTheme {
     final base = ThemeData.dark(useMaterial3: true);
     return base.copyWith(
+      brightness: Brightness.dark,
+      extensions: const [SafeHairColors.dark],
       colorScheme: const ColorScheme.dark(
-        primary: Color(0xFF8A7DFF),
-        surface: Color(0xFF12151C),
+        primary: Color(0xFFE0E0E0),
+        onPrimary: Colors.black,
+        surface: Color(0xFF1C2129),
+        onSurface: Colors.white,
       ),
-      scaffoldBackgroundColor: const Color(0xFF10131A),
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xFF171B24),
+      scaffoldBackgroundColor: SafeHairColors.dark.scaffold,
+      cardColor: SafeHairColors.dark.card,
+      dividerColor: SafeHairColors.dark.border,
+      appBarTheme: AppBarTheme(
+        backgroundColor: SafeHairColors.dark.appBar,
+        foregroundColor: SafeHairColors.dark.textPrimary,
         elevation: 0,
+        iconTheme: IconThemeData(color: SafeHairColors.dark.textPrimary),
+      ),
+      dialogTheme: DialogThemeData(backgroundColor: SafeHairColors.dark.card),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: SafeHairColors.dark.card,
+        contentTextStyle: TextStyle(color: SafeHairColors.dark.textPrimary),
+      ),
+      listTileTheme: ListTileThemeData(
+        textColor: SafeHairColors.dark.textPrimary,
+        iconColor: SafeHairColors.dark.icon,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0xFF1B2230),
+        labelStyle: TextStyle(color: SafeHairColors.dark.textSecondary),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: SafeHairColors.dark.border),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       ),
