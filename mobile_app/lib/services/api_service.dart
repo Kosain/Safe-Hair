@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart'
-    show kDebugMode, kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:http/http.dart' as http;
 
-import '../core/constants.dart';
+import '../core/api_config.dart';
 import '../utils/scalp_api_normalize.dart';
 
 class ApiService {
@@ -18,30 +17,8 @@ class ApiService {
   String? _currentUserId;
   String? _currentUserEmail;
 
-  /// Optional override: `flutter run --dart-define=API_BASE_URL=http://host:8000`
-  static String get _configuredBase {
-    const raw = String.fromEnvironment('API_BASE_URL');
-    if (raw.isEmpty) return '';
-    var b = raw.trim();
-    if (b.endsWith('/')) b = b.substring(0, b.length - 1);
-    return b;
-  }
-
-  /// Web / desktop: localhost. Android emulator: 10.0.2.2. Real device: `--dart-define` or apiBaseUrlMobile.
-  String get _baseUrl {
-    final override = _configuredBase;
-    if (override.isNotEmpty) return override;
-    if (kIsWeb) return AppConstants.apiBaseUrlWeb;
-    if (defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.macOS) {
-      return AppConstants.apiBaseUrlWeb;
-    }
-    return AppConstants.apiBaseUrlMobile;
-  }
-
-  bool get _usesLocalBackend =>
-      _baseUrl.contains('localhost') || _baseUrl.contains('127.0.0.1');
+  /// Web / desktop: localhost (or page host on LAN). Android emulator: 10.0.2.2. Real device: `--dart-define`.
+  String get _baseUrl => ApiConfig.resolveBaseUrl();
 
   /// Clears JWT and user headers (call on sign-out so the next user does not reuse the session).
   void clearSession() {
@@ -233,14 +210,21 @@ class ApiService {
         }
       }
 
-      if (_usesLocalBackend && !await isBackendReachable()) {
+      if (!await isBackendReachable()) {
         return {
           '_error':
-              'AI backend is not reachable at $_baseUrl. Run backend\\start_backend.bat (port 8000), then try again.'
+              'AI backend is not reachable at $_baseUrl. ${ApiConfig.connectionHelp(_baseUrl)}',
         };
       }
       return {'_error': 'AI API failed (${res.statusCode}): ${res.body}'};
     } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('Failed to fetch') || msg.contains('Connection refused') || msg.contains('SocketException')) {
+        return {
+          '_error':
+              'Cannot reach AI server at $_baseUrl. ${ApiConfig.connectionHelp(_baseUrl)}',
+        };
+      }
       return {'_error': 'AI API request error: $e'};
     }
   }

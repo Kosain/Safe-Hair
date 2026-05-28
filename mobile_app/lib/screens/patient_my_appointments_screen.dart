@@ -15,6 +15,7 @@ class _BookableDoctor {
     required this.clinic,
     required this.city,
     required this.rating,
+    required this.reviewCount,
     required this.fee,
   });
 
@@ -23,6 +24,7 @@ class _BookableDoctor {
   final String clinic;
   final String city;
   final double rating;
+  final int reviewCount;
   final int fee;
 }
 
@@ -58,6 +60,13 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
       final uid = context.read<AuthProvider>().userId;
       final rows = await FirebaseService.getDoctorsForPatientBookingOnce(patientUserId: uid);
       if (!mounted) return;
+      final doctorIds = <String>[];
+      for (final r in rows) {
+        final id = (r['id'] ?? r['userId'] ?? r['user_id'] ?? '').toString().trim();
+        if (id.isNotEmpty) doctorIds.add(id);
+      }
+      final ratingSummaries = await FirebaseService.getDoctorRatingSummaries(doctorIds);
+      if (!mounted) return;
       final mapped = <_BookableDoctor>[];
       for (final r in rows) {
         final id = (r['id'] ?? r['userId'] ?? r['user_id'] ?? '').toString().trim();
@@ -65,19 +74,19 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
         final name = (r['fullName'] ?? r['name'] ?? 'Doctor').toString().trim();
         final clinic = (r['clinicName'] ?? r['clinic_name'] ?? '').toString().trim();
         final city = (r['city'] ?? '').toString().trim();
-        final feeRaw = r['consultationFee'] ?? r['consultation_fee'] ?? 0;
-        final fee = feeRaw is num ? feeRaw.toInt() : int.tryParse(feeRaw.toString()) ?? 0;
-        final ratingRaw = r['rating'];
-        final rating = ratingRaw is num
-            ? ratingRaw.toDouble()
-            : double.tryParse(ratingRaw?.toString() ?? '') ?? 4.5;
+        final feeRaw = r['consultationFee'] ?? r['consultation_fee'];
+        final fee = feeRaw == null
+            ? 0
+            : (feeRaw is num ? feeRaw.toInt() : int.tryParse(feeRaw.toString()) ?? 0);
+        final summary = ratingSummaries[id] ?? const DoctorRatingSummary(average: 0, count: 0);
         mapped.add(
           _BookableDoctor(
             id: id,
             name: name.isEmpty ? 'Doctor' : name,
             clinic: clinic.isEmpty ? 'Clinic' : clinic,
             city: city.isEmpty ? '' : city,
-            rating: rating,
+            rating: summary.hasReviews ? summary.average : 0,
+            reviewCount: summary.count,
             fee: fee,
           ),
         );
@@ -96,6 +105,7 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
       }
     } catch (e, st) {
       debugPrint('_loadBookableDoctors: $e\n$st');
+      FirebaseService.lastDoctorsListError = 'Could not load doctors: $e';
       if (mounted) {
         setState(() {
           _bookable = const [];
@@ -178,7 +188,8 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                           padding: const EdgeInsets.symmetric(vertical: 20),
                           child: Text(
                             canStream
-                                ? 'No bookable doctors in Firebase `doctors` yet. Run: py backend\\scripts\\seed_demo_doctors.py — then tap Refresh. (Doctors from your past appointments may appear after the next app update if the list was empty.)'
+                                ? (FirebaseService.lastDoctorsListError ??
+                                    'No doctors available to book yet. Ask your doctor to sign in, finish all 6 registration steps, and save on the last step — then tap Refresh.')
                                 : 'Enable Firebase and sign in to load doctors you can book.',
                             style: TextStyle(fontSize: 13, color: sh.textSecondary, height: 1.4),
                           ),
@@ -239,20 +250,31 @@ class _PatientMyAppointmentsScreenState extends State<PatientMyAppointmentsScree
                                             style: TextStyle(fontSize: 13, color: sh.textSecondary),
                                           ),
                                           const SizedBox(height: 3),
-                                          Row(
-                                            children: [
-                                              ...List.generate(
-                                                5,
-                                                (i) => Icon(
-                                                  Icons.star,
-                                                  size: 16,
-                                                  color: i < d.rating.round() ? Colors.amber : const Color(0xFFD0D0D0),
+                                          if (d.reviewCount > 0)
+                                            Row(
+                                              children: [
+                                                ...List.generate(
+                                                  5,
+                                                  (i) => Icon(
+                                                    Icons.star,
+                                                    size: 16,
+                                                    color: i < d.rating.round().clamp(0, 5)
+                                                        ? Colors.amber
+                                                        : sh.border,
+                                                  ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text('${d.rating}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sh.textPrimary)),
-                                            ],
-                                          ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  '${d.rating.toStringAsFixed(1)} (${d.reviewCount})',
+                                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sh.textPrimary),
+                                                ),
+                                              ],
+                                            )
+                                          else
+                                            Text(
+                                              'No reviews yet',
+                                              style: TextStyle(fontSize: 12, color: sh.textSecondary),
+                                            ),
                                           const SizedBox(height: 2),
                                           Text(
                                             'Consultation Fee: PKR ${d.fee}',

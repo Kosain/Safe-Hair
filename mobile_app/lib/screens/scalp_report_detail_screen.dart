@@ -14,6 +14,7 @@ import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 import '../utils/scalp_issue_recommendation_text.dart';
@@ -103,8 +104,6 @@ String cleanRecommendationLine(String raw) {
   return s.trim();
 }
 
-List<Map<String, dynamic>> _defaultIssues() => [];
-
 List<String> _defaultRecommendations() => [];
 
 bool _overlayIsStale(Map<String, dynamic> d) {
@@ -124,9 +123,16 @@ bool _overlayIsStale(Map<String, dynamic> d) {
 }
 
 class ScalpReportDetailScreen extends StatefulWidget {
-  const ScalpReportDetailScreen({super.key, required this.reportId});
+  const ScalpReportDetailScreen({
+    super.key,
+    required this.reportId,
+    this.patientUserId,
+  });
 
   final String reportId;
+
+  /// When set (e.g. doctor viewing a patient), load report for this user instead of the signed-in patient.
+  final String? patientUserId;
 
   @override
   State<ScalpReportDetailScreen> createState() => _ScalpReportDetailScreenState();
@@ -144,7 +150,10 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
   }
 
   Future<void> _load() async {
-    final uid = context.read<AuthProvider>().userId;
+    final override = widget.patientUserId?.trim();
+    final uid = (override != null && override.isNotEmpty)
+        ? override
+        : context.read<AuthProvider>().userId;
     if (uid == null || uid.isEmpty || !FirebaseService.isInitialized) {
       setState(() {
         _loading = false;
@@ -251,23 +260,6 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
     }
   }
 
-  List<Map<String, dynamic>> _parseIssues(dynamic raw) {
-    if (raw is! List) return _defaultIssues();
-    final out = <Map<String, dynamic>>[];
-    for (final e in raw) {
-      if (e is Map) {
-        out.add({
-          'issue': e['issue']?.toString() ?? '',
-          'severity': e['severity']?.toString() ?? '',
-          'location': e['location']?.toString() ?? '',
-          'recommendation': e['recommendation']?.toString() ?? '',
-          'confidencePct': e['confidencePct'] ?? e['confidence'] ?? '',
-        });
-      }
-    }
-    return out.isEmpty ? _defaultIssues() : out;
-  }
-
   List<String> _parseRecs(dynamic raw) {
     if (raw is! List) return _defaultRecommendations();
     final out = <String>[];
@@ -335,6 +327,7 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
 
     final tableMinWidth = math.max(MediaQuery.sizeOf(context).width - 32, 720.0);
 
+    final sh = context.sh;
     return PatientWebScaffold(
       currentRoute: '/my-report',
       extraScrollBottomPadding: 80,
@@ -345,7 +338,7 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           Row(
             children: [
               IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.black),
+                icon: Icon(Icons.arrow_back_ios_new_rounded, color: sh.textPrimary),
                 onPressed: () {
                   if (context.canPop()) {
                     context.pop();
@@ -354,22 +347,22 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                   }
                 },
               ),
-              const Expanded(
+              Expanded(
                 child: Text(
                   'AI Scalp Analysis Report',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: Colors.black),
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: sh.textPrimary),
                 ),
               ),
               TextButton(
                 onPressed: () => _shareOrDownload(share: false),
-                style: TextButton.styleFrom(foregroundColor: Colors.black87, padding: const EdgeInsets.symmetric(horizontal: 8)),
-                child: const Row(
+                style: TextButton.styleFrom(foregroundColor: sh.textPrimary, padding: const EdgeInsets.symmetric(horizontal: 8)),
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.picture_as_pdf_outlined, size: 18, color: Colors.black87),
-                    SizedBox(width: 4),
-                    Text('Download PDF', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    Icon(Icons.picture_as_pdf_outlined, size: 18, color: sh.textPrimary),
+                    const SizedBox(width: 4),
+                    Text('Download PDF', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sh.textPrimary)),
                   ],
                 ),
               ),
@@ -377,12 +370,13 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(dateTimeLine, style: TextStyle(color: Colors.grey.shade700, fontSize: 14, fontWeight: FontWeight.w500)),
+                Text(dateTimeLine, style: TextStyle(color: sh.textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 10),
-                Text(patientLine, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87, height: 1.35)),
+                Text(patientLine, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: sh.textPrimary, height: 1.35)),
                 const SizedBox(height: 14),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -391,7 +385,7 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Overall hair health score', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          Text('Overall hair health score', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: sh.textPrimary)),
                           const SizedBox(height: 6),
                           Text(
                             '$overall / 100',
@@ -419,8 +413,8 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                           Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text('$overall', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-                              const Text('/100', style: TextStyle(fontSize: 10, color: Colors.black54)),
+                              Text('$overall', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: sh.textPrimary)),
+                              Text('/100', style: TextStyle(fontSize: 10, color: sh.textSecondary)),
                             ],
                           ),
                         ],
@@ -433,11 +427,12 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             crossAxisAlignment: CrossAxisAlignment.start,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Scalp photo (highlighted)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                Text('Scalp photo (highlighted)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: sh.textPrimary)),
                 if (_overlayIsStale(d)) ...[
                   const SizedBox(height: 8),
                   Container(
@@ -506,18 +501,19 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                 const SizedBox(height: 12),
                 Text(
                   'Overlay shown above is generated by backend AI from this uploaded image.',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  style: TextStyle(fontSize: 12, color: sh.textSecondary),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             crossAxisAlignment: CrossAxisAlignment.start,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Key metrics', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                Text('Key metrics', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: sh.textPrimary)),
                 const SizedBox(height: 12),
                 LayoutBuilder(
                   builder: (context, c) {
@@ -528,10 +524,10 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                       spacing: gap,
                       runSpacing: gap,
                       children: [
-                        SizedBox(width: tileW, child: _metricCell('Hair Strength', strength, const Color(0xFF59C6B0))),
-                        SizedBox(width: tileW, child: _metricCell('Scalp Health', scalp, const Color(0xFFB76BCA))),
-                        SizedBox(width: tileW, child: _metricCell('Hair Damage Level', damage, const Color(0xFF7B9ACD))),
-                        SizedBox(width: tileW, child: _metricCell('Hair Fall Risk', fall, const Color(0xFFB7BD56))),
+                        SizedBox(width: tileW, child: _metricCell(context, 'Hair Strength', strength, const Color(0xFF59C6B0))),
+                        SizedBox(width: tileW, child: _metricCell(context, 'Scalp Health', scalp, const Color(0xFFB76BCA))),
+                        SizedBox(width: tileW, child: _metricCell(context, 'Hair Damage Level', damage, const Color(0xFF7B9ACD))),
+                        SizedBox(width: tileW, child: _metricCell(context, 'Hair Fall Risk', fall, const Color(0xFFB7BD56))),
                       ],
                     );
                   },
@@ -539,14 +535,14 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                 const SizedBox(height: 4),
                 Text(
                   'Hair Strength: $strength% | Scalp Health: $scalp% | Hair Damage: $damage% | Hair Fall Risk: $fall%',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey.shade800, height: 1.4),
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: sh.textSecondary, height: 1.4),
                   softWrap: true,
                 ),
                 if (baldRatioPct != null) ...[
                   const SizedBox(height: 6),
                   Text(
                     'Scores are computed from this photo by the AI backend (visible thinning ~$baldRatioPct% of frame).',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.35),
+                    style: TextStyle(fontSize: 11, color: sh.textSecondary, height: 1.35),
                   ),
                 ],
               ],
@@ -554,18 +550,19 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             crossAxisAlignment: CrossAxisAlignment.start,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Detected issues', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                Text('Detected issues', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: sh.textPrimary)),
                 const SizedBox(height: 12),
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: SizedBox(
                     width: tableMinWidth,
                     child: Table(
-                      border: TableBorder.all(color: Colors.grey.shade400),
+                      border: TableBorder.all(color: sh.border),
                       defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                       columnWidths: const {
                         0: FlexColumnWidth(2),
@@ -576,23 +573,23 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                       },
                       children: [
                         TableRow(
-                          decoration: BoxDecoration(color: Colors.grey.shade200),
+                          decoration: BoxDecoration(color: sh.sidebarSelectedBg),
                           children: [
-                            _th('Issue'),
-                            _th('Severity'),
-                            _th('Location'),
-                            _th('Recommendation'),
-                            _th('Confidence %'),
+                            _th(context, 'Issue'),
+                            _th(context, 'Severity'),
+                            _th(context, 'Location'),
+                            _th(context, 'Recommendation'),
+                            _th(context, 'Confidence %'),
                           ],
                         ),
                         ...tableIssues.map(
                           (row) => TableRow(
                             children: [
-                              _td(row['issue']?.toString() ?? ''),
-                              _td(row['severity']?.toString() ?? ''),
-                              _td(row['location']?.toString() ?? ''),
-                              _td(row['recommendation']?.toString() ?? ''),
-                              _td('${row['confidencePct']}%'),
+                              _td(context, row['issue']?.toString() ?? ''),
+                              _td(context, row['severity']?.toString() ?? ''),
+                              _td(context, row['location']?.toString() ?? ''),
+                              _td(context, row['recommendation']?.toString() ?? ''),
+                              _td(context, '${row['confidencePct']}%'),
                             ],
                           ),
                         ),
@@ -605,18 +602,20 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             child: Text(
               'Estimated grafts needed: $graft',
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: sh.textPrimary),
             ),
           ),
           const SizedBox(height: 12),
           _card(
+            context,
             crossAxisAlignment: CrossAxisAlignment.start,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Personalized recommendations', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                Text('Personalized recommendations', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: sh.textPrimary)),
                 const SizedBox(height: 12),
                 ...(listRecs.isEmpty ? ['No recommendations available for this report.'] : listRecs).map(
                   (r) => Padding(
@@ -626,11 +625,11 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
                       children: [
                         Padding(
                           padding: const EdgeInsets.only(top: 7),
-                          child: Icon(Icons.circle, size: 6, color: Colors.grey.shade800),
+                          child: Icon(Icons.circle, size: 6, color: sh.textSecondary),
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(r, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.4)),
+                          child: Text(r, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.4, color: sh.textPrimary)),
                         ),
                       ],
                     ),
@@ -643,20 +642,23 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
           Text(
             'This is an AI-generated report for informational purposes only. Not a substitute for professional medical advice.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.35),
+            style: TextStyle(fontSize: 11, color: sh.textSecondary, height: 1.35),
           ),
           const SizedBox(height: 20),
-          _blackBtn(
+          _actionBtn(
+            context,
             label: 'Book Appointment',
             onTap: () => context.go('/my-appointments'),
           ),
           const SizedBox(height: 10),
-          _blackBtn(
+          _actionBtn(
+            context,
             label: 'New Scan',
             onTap: () => context.go('/my-scans'),
           ),
           const SizedBox(height: 10),
-          _blackBtn(
+          _actionBtn(
+            context,
             label: 'Share Report',
             onTap: () => _shareOrDownload(share: true),
           ),
@@ -665,17 +667,19 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
     );
   }
 
-  static Widget _metricCell(String label, int pct, Color ring) {
+  Widget _metricCell(BuildContext context, String label, int pct, Color ring) {
+    final sh = context.sh;
     final v = (pct.clamp(0, 100)) / 100.0;
     return _card(
+      context,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          Text(label, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: sh.textPrimary)),
           Row(
             children: [
-              Text('$pct%', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+              Text('$pct%', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: sh.textPrimary)),
               const Spacer(),
               SizedBox(
                 width: 36,
@@ -694,47 +698,60 @@ class _ScalpReportDetailScreenState extends State<ScalpReportDetailScreen> {
     );
   }
 
-  static Widget _th(String t) {
+  Widget _th(BuildContext context, String t) {
+    final sh = context.sh;
     return Padding(
       padding: const EdgeInsets.all(8),
-      child: Text(t, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+      child: Text(t, style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: sh.textPrimary)),
     );
   }
 
-  static Widget _td(String t) {
+  Widget _td(BuildContext context, String t) {
+    final sh = context.sh;
     return Padding(
       padding: const EdgeInsets.all(8),
-      child: Text(t, style: const TextStyle(fontSize: 11, height: 1.25)),
+      child: Text(t, style: TextStyle(fontSize: 11, height: 1.25, color: sh.textPrimary)),
     );
   }
 
-  static Widget _card({required Widget child, CrossAxisAlignment crossAxisAlignment = CrossAxisAlignment.stretch}) {
+  Widget _card(
+    BuildContext context, {
+    required Widget child,
+    CrossAxisAlignment crossAxisAlignment = CrossAxisAlignment.stretch,
+  }) {
+    final sh = context.sh;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: sh.card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: sh.border),
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2)),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 8, offset: const Offset(0, 2)),
         ],
       ),
-      child: child,
+      child: DefaultTextStyle(
+        style: TextStyle(color: sh.textPrimary),
+        child: child,
+      ),
     );
   }
 
-  static Widget _blackBtn({required String label, required VoidCallback onTap}) {
+  Widget _actionBtn(BuildContext context, {required String label, required VoidCallback onTap}) {
+    final sh = context.sh;
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
         onPressed: onTap,
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
+          backgroundColor: sh.card,
+          foregroundColor: sh.textPrimary,
           padding: const EdgeInsets.symmetric(vertical: 14),
+          elevation: 0,
+          side: BorderSide(color: sh.border),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
-        child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+        child: Text(label, style: TextStyle(fontWeight: FontWeight.w600, color: sh.textPrimary)),
       ),
     );
   }

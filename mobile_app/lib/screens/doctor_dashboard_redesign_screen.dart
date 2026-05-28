@@ -13,7 +13,7 @@ import '../l10n/tr.dart';
 import '../providers/auth_provider.dart';
 import '../services/chat_service.dart';
 import '../services/firebase_service.dart';
-import 'scalp_report_detail_screen.dart';
+import 'doctor_patient_clinical_page.dart';
 
 class _PendingRequest {
   const _PendingRequest({
@@ -63,6 +63,70 @@ DateTime? _appointmentFirstSortTime(Map<String, dynamic> m) {
   final ds = (m['date'] ?? '').toString().trim();
   if (ds.isEmpty) return null;
   return DateTime.tryParse('${ds}T12:00:00');
+}
+
+int? _patientAgeYearsFromDetails(Map<String, dynamic>? data) {
+  if (data == null) return null;
+  final day = (data['dob_day'] as num?)?.toInt() ?? (data['age_day'] as num?)?.toInt();
+  final month = (data['dob_month'] as num?)?.toInt() ?? (data['age_month'] as num?)?.toInt();
+  final year = (data['dob_year'] as num?)?.toInt() ?? (data['age_year'] as num?)?.toInt();
+  if (day == null || month == null || year == null) return null;
+  try {
+    final dob = DateTime(year, month, day);
+    final now = DateTime.now();
+    var age = now.year - dob.year;
+    if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) age--;
+    if (age > 0 && age < 120) return age;
+  } catch (_) {}
+  return null;
+}
+
+int? _ageGroupIndexForAge(int age) {
+  if (age <= 30) return 0;
+  if (age <= 50) return 1;
+  if (age <= 65) return 2;
+  return 3;
+}
+
+/// Builds age-group chart data from unique patients on this doctor's appointments (Firestore DOB).
+Future<List<_DoctorAge>> _doctorAgeGroupsFromAppointmentDocs(
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+) async {
+  const buckets = <(String label, Color color)>[
+    ('Young Adult (18–30)', Color(0xFFF89A4C)),
+    ('Adult (31–50)', Color(0xFF5D5FEF)),
+    ('Mature (51–65)', Color(0xFF4CAF50)),
+    ('Senior (65+)', Color(0xFF90CAF9)),
+  ];
+
+  final uids = <String>{};
+  for (final d in docs) {
+    final uid = (d.data()['userId'] ?? '').toString().trim();
+    if (uid.isNotEmpty) uids.add(uid);
+  }
+
+  final counts = List<int>.filled(buckets.length, 0);
+  if (uids.isEmpty || !FirebaseService.isInitialized) {
+    return List.generate(buckets.length, (i) => _DoctorAge(buckets[i].$1, 0, 0, buckets[i].$2));
+  }
+
+  var patientsWithAge = 0;
+  for (final uid in uids) {
+    try {
+      final snap = await FirebaseService.getPatientDetails(uid);
+      final age = _patientAgeYearsFromDetails(snap?.data());
+      final idx = age != null ? _ageGroupIndexForAge(age) : null;
+      if (idx == null) continue;
+      counts[idx]++;
+      patientsWithAge++;
+    } catch (_) {}
+  }
+
+  return List.generate(buckets.length, (i) {
+    final c = counts[i];
+    final pct = patientsWithAge > 0 ? ((c * 100) / patientsWithAge).round() : 0;
+    return _DoctorAge(buckets[i].$1, c, pct, buckets[i].$2);
+  });
 }
 
 List<_DoctorStat> _doctorDashboardStatsFromAppointmentDocs(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
@@ -402,51 +466,6 @@ class _DoctorAppointmentsFirestoreState extends State<DoctorAppointmentsFirestor
   }
 }
 
-class _DoctorPatientListItem {
-  const _DoctorPatientListItem(this.name, this.phone, this.lastVisit, this.consultations);
-  final String name;
-  final String phone;
-  final String lastVisit;
-  final int consultations;
-}
-
-const _kPracticePatients = <_DoctorPatientListItem>[
-  _DoctorPatientListItem('Sana Khan', '+92 300 1122334', 'Apr 28, 2026', 5),
-  _DoctorPatientListItem('Fatima Noor', '+92 321 4455667', 'Apr 22, 2026', 3),
-  _DoctorPatientListItem('Ahmed Raza', '+92 333 7788990', 'Apr 18, 2026', 2),
-  _DoctorPatientListItem('Hina Ali', '+92 345 2233445', 'Apr 10, 2026', 7),
-  _DoctorPatientListItem('John Doe', '+92 301 9988776', 'Mar 30, 2026', 1),
-  _DoctorPatientListItem('Umer Tariq', '+92 302 5544332', 'Mar 15, 2026', 4),
-  _DoctorPatientListItem('Ayesha Malik', '+92 304 6677889', 'Mar 02, 2026', 2),
-  _DoctorPatientListItem('Bilal Hussain', '+92 315 1122009', 'Feb 19, 2026', 6),
-  _DoctorPatientListItem('Zara Sheikh', '+92 318 4455123', 'Feb 05, 2026', 3),
-  _DoctorPatientListItem('Omar Farooq', '+92 322 9988001', 'Jan 22, 2026', 8),
-];
-
-class _DoctorMockVitals {
-  const _DoctorMockVitals({required this.age, required this.gender, required this.summary});
-  final String age;
-  final String gender;
-  final String summary;
-
-  static _DoctorMockVitals fromPatientName(String patientName) {
-    final pos = patientName.hashCode.abs();
-    final age = 28 + pos % 28;
-    final gender = pos.isEven ? 'Female' : 'Male';
-    final score = 55 + pos % 36;
-    final strength = 60 + pos % 30;
-    final scalp = 58 + pos % 25;
-    final issues =
-        pos.isEven ? 'mild thinning at vertex, seasonal dryness' : 'minor inflammation at hairline, product buildup';
-    return _DoctorMockVitals(
-      age: '$age',
-      gender: gender,
-      summary:
-          'Overall score: $score/100\nHair strength: $strength • Scalp health: $scalp\nDetected issues: $issues',
-    );
-  }
-}
-
 class DoctorDashboardScreen extends StatefulWidget {
   const DoctorDashboardScreen({super.key, this.section = 'dashboard'});
 
@@ -457,14 +476,6 @@ class DoctorDashboardScreen extends StatefulWidget {
 }
 
 class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
-  /// Life-stage groups; colors unchanged (was Child/Adult/Teen/Older palette).
-  static const _ageGroups = <_DoctorAge>[
-    _DoctorAge('Young Adult (18–30)', 170, 36, Color(0xFFF89A4C)),
-    _DoctorAge('Adult (31–50)', 298, 32, Color(0xFF5D5FEF)),
-    _DoctorAge('Mature (51–65)', 457, 21, Color(0xFF4CAF50)),
-    _DoctorAge('Senior (65+)', 525, 12, Color(0xFF90CAF9)),
-  ];
-
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
@@ -483,16 +494,18 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
             : DoctorAppointmentsFirestore(doctorId: doctorId),
       );
     } else if (active == 'patients') {
-      bodyBelowTopBar = const Padding(
-        padding: EdgeInsets.fromLTRB(16, 8, 16, 96),
-        child: _DoctorPatientsSearchBody(),
+      bodyBelowTopBar = Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+        child: doctorId == null || doctorId.isEmpty
+            ? Center(child: Text(context.t('sign_in_doctor_appointments'), style: TextStyle(color: context.sh.textPrimary)))
+            : _DoctorPatientsFromFirestore(doctorId: doctorId),
       );
     } else if (doctorId == null || doctorId.isEmpty) {
       bodyBelowTopBar = SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 100),
         child: _DoctorDashboardMain(
           stats: _doctorDashboardStatsFromAppointmentDocs(const []),
-          ageGroups: _ageGroups,
+          ageGroups: const [],
           upcoming: const [],
           trend: _weekAppointmentTrendFromDocs(const []),
         ),
@@ -509,14 +522,32 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
           }
           final docs = snap.data ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
           final upcoming = _doctorHomePreviewRowsFromDocs(docs);
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(24, 24, 24, 100),
-            child: _DoctorDashboardMain(
-              stats: _doctorDashboardStatsFromAppointmentDocs(docs),
-              ageGroups: _ageGroups,
-              upcoming: upcoming,
-              trend: _weekAppointmentTrendFromDocs(docs),
-            ),
+          final docKey = docs.map((d) => d.id).join(',');
+          return FutureBuilder<List<_DoctorAge>>(
+            key: ValueKey(docKey),
+            future: _doctorAgeGroupsFromAppointmentDocs(docs),
+            builder: (context, ageSnap) {
+              final ageGroups = ageSnap.data ?? const <_DoctorAge>[];
+              final stats = _doctorDashboardStatsFromAppointmentDocs(docs);
+              final trend = _weekAppointmentTrendFromDocs(docs);
+              if (ageSnap.connectionState == ConnectionState.waiting && !ageSnap.hasData) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(48),
+                    child: CircularProgressIndicator(color: context.sh.textPrimary),
+                  ),
+                );
+              }
+              return SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 100),
+                child: _DoctorDashboardMain(
+                  stats: stats,
+                  ageGroups: ageGroups,
+                  upcoming: upcoming,
+                  trend: trend,
+                ),
+              );
+            },
           );
         },
       );
@@ -859,6 +890,13 @@ class _DoctorSidebar extends StatelessWidget {
                 sh: sh,
               ),
               _SidebarItem(
+                icon: Icons.person_outline,
+                label: context.t('nav_my_profile'),
+                selected: GoRouterState.of(context).matchedLocation.startsWith('/doctor-profile'),
+                onTap: () => context.go('/doctor-profile'),
+                sh: sh,
+              ),
+              _SidebarItem(
                 icon: Icons.chat_bubble_outline,
                 label: context.t('nav_my_chats'),
                 selected: GoRouterState.of(context).matchedLocation.startsWith('/chat'),
@@ -1027,38 +1065,35 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                               style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary),
                             ),
                           ),
-                          const SizedBox(width: 6),
-                          SizedBox(
-                            width: 60,
-                            height: 30,
-                            child: TextButton(
-                              style: TextButton.styleFrom(
-                                backgroundColor: Colors.black,
-                                foregroundColor: Colors.white,
-                                padding: EdgeInsets.zero,
-                                minimumSize: const Size(60, 30),
-                                fixedSize: const Size(60, 30),
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          if (doctorAppointmentAllowsClinicalView(item.$4)) ...[
+                            const SizedBox(width: 6),
+                            SizedBox(
+                              width: 60,
+                              height: 30,
+                              child: TextButton(
+                                style: TextButton.styleFrom(
+                                  backgroundColor: sh.selectedNavBg,
+                                  foregroundColor: sh.selectedNavFg,
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: const Size(60, 30),
+                                  fixedSize: const Size(60, 30),
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () {
+                                  openDoctorPatientClinical(
+                                    context,
+                                    patientUserId: item.$5,
+                                    patientName: item.$1,
+                                    appointmentDateTime: item.$2,
+                                    reason: item.$3,
+                                    canViewReport: true,
+                                  );
+                                },
+                                child: const Text('View', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 11)),
                               ),
-                              onPressed: () {
-                                final mock = _DoctorMockVitals.fromPatientName(item.$1);
-                                Navigator.of(context).push<void>(
-                                  MaterialPageRoute<void>(
-                                    builder: (ctx) => _DoctorPatientAppointmentDetailPage(
-                                      patientName: item.$1,
-                                      appointmentDateTime: item.$2,
-                                      reason: item.$3,
-                                      mockAge: mock.age,
-                                      mockGender: mock.gender,
-                                      mockAiSummary: mock.summary,
-                                    ),
-                                  ),
-                                );
-                              },
-                              child: const Text('View', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 11)),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 8),
@@ -1331,6 +1366,7 @@ class _AgePieCardState extends State<_AgePieCard> {
   Widget build(BuildContext context) {
     final sh = context.sh;
     final ageGroups = widget.ageGroups;
+    final totalPatients = ageGroups.fold<int>(0, (s, g) => s + g.count);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1343,6 +1379,18 @@ class _AgePieCardState extends State<_AgePieCard> {
         children: [
           Text(context.t('patient_age_groups'), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: sh.textPrimary)),
           const SizedBox(height: 12),
+          if (totalPatients == 0)
+            SizedBox(
+              height: 120,
+              child: Center(
+                child: Text(
+                  'No patient age data yet. Ages appear when patients complete their profile date of birth.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w500, height: 1.35),
+                ),
+              ),
+            )
+          else
           SizedBox(
             height: 260,
             child: PieChart(
@@ -1369,7 +1417,7 @@ class _AgePieCardState extends State<_AgePieCard> {
                     final g = ageGroups[i];
                     final touched = _touchedIndex == i;
                     return PieChartSectionData(
-                      value: g.percent.toDouble(),
+                      value: g.count > 0 ? g.count.toDouble() : 0.001,
                       color: g.color,
                       radius: 62,
                       title: touched ? '${g.title}\n${g.count} (${g.percent}%)' : '${g.percent}%',
@@ -1384,24 +1432,26 @@ class _AgePieCardState extends State<_AgePieCard> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
-          ...ageGroups.map(
-            (g) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  Container(width: 10, height: 10, decoration: BoxDecoration(color: g.color, shape: BoxShape.circle)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${g.title}: ${g.count} (${g.percent}%)',
-                      style: TextStyle(fontWeight: FontWeight.w600, color: sh.textPrimary),
+          if (totalPatients > 0) ...[
+            const SizedBox(height: 8),
+            ...ageGroups.map(
+              (g) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Container(width: 10, height: 10, decoration: BoxDecoration(color: g.color, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${g.title}: ${g.count} (${g.percent}%)',
+                        style: TextStyle(fontWeight: FontWeight.w600, color: sh.textPrimary),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1655,18 +1705,13 @@ class _AppointmentUpcomingList extends StatelessWidget {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                         onPressed: () {
-                          final mock = _DoctorMockVitals.fromPatientName(a.patientName);
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (ctx) => _DoctorPatientAppointmentDetailPage(
-                                patientName: a.patientName,
-                                appointmentDateTime: a.dateTimeLabel,
-                                reason: a.reason,
-                                mockAge: mock.age,
-                                mockGender: mock.gender,
-                                mockAiSummary: mock.summary,
-                              ),
-                            ),
+                          openDoctorPatientClinical(
+                            context,
+                            patientUserId: a.patientUserId,
+                            patientName: a.patientName,
+                            appointmentDateTime: a.dateTimeLabel,
+                            reason: a.reason,
+                            canViewReport: true,
                           );
                         },
                         child: const Text('View', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 11)),
@@ -1711,14 +1756,16 @@ class _AppointmentUpcomingList extends StatelessWidget {
   }
 }
 
-class _DoctorPatientsSearchBody extends StatefulWidget {
-  const _DoctorPatientsSearchBody();
+class _DoctorPatientsFromFirestore extends StatefulWidget {
+  const _DoctorPatientsFromFirestore({required this.doctorId});
+
+  final String doctorId;
 
   @override
-  State<_DoctorPatientsSearchBody> createState() => _DoctorPatientsSearchBodyState();
+  State<_DoctorPatientsFromFirestore> createState() => _DoctorPatientsFromFirestoreState();
 }
 
-class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
+class _DoctorPatientsFromFirestoreState extends State<_DoctorPatientsFromFirestore> {
   final _search = TextEditingController();
 
   @override
@@ -1727,224 +1774,148 @@ class _DoctorPatientsSearchBodyState extends State<_DoctorPatientsSearchBody> {
     super.dispose();
   }
 
-  List<_DoctorPatientListItem> get _filtered {
-    final q = _search.text.trim().toLowerCase();
-    if (q.isEmpty) return _kPracticePatients;
-    return _kPracticePatients
-        .where((p) => p.name.toLowerCase().contains(q) || p.phone.toLowerCase().replaceAll(' ', '').contains(q))
-        .toList();
-  }
-
   @override
   Widget build(BuildContext context) {
     final sh = context.sh;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TextField(
-          controller: _search,
-          onChanged: (_) => setState(() {}),
-          style: TextStyle(color: sh.textPrimary),
-          decoration: InputDecoration(
-            hintText: 'Search by name or phone...',
-            hintStyle: TextStyle(color: sh.textSecondary),
-            prefixIcon: Icon(Icons.search, color: sh.textSecondary),
-            filled: true,
-            fillColor: sh.card,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: sh.textPrimary),
-            ),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _filtered.length,
-            itemBuilder: (context, index) {
-              final p = _filtered[index];
-              final mock = _DoctorMockVitals.fromPatientName(p.name);
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: sh.card,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: sh.border),
-                  boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 8, offset: Offset(0, 2))],
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: sh.sidebarSelectedBg,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: sh.border),
-                      ),
-                      child: Text(
-                        p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
-                        style: TextStyle(color: sh.textPrimary, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(p.name, style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary)),
-                          const SizedBox(height: 4),
-                          Text(p.phone, style: TextStyle(color: sh.textSecondary, fontSize: 13)),
-                          const SizedBox(height: 2),
-                          Text('Last visit: ${p.lastVisit} • ${p.consultations} consultation(s)',
-                              style: TextStyle(color: sh.textSecondary, fontSize: 12)),
-                        ],
-                      ),
-                    ),
-                    SizedBox(
-                      width: 88,
-                      height: 30,
-                      child: TextButton(
-                        style: TextButton.styleFrom(
-                          backgroundColor: sh.sidebarSelectedBg,
-                          foregroundColor: sh.textPrimary,
-                          padding: EdgeInsets.zero,
-                          minimumSize: const Size(88, 30),
-                          fixedSize: const Size(88, 30),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          side: BorderSide(color: sh.border),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        onPressed: () {
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (ctx) => _DoctorPatientAppointmentDetailPage(
-                                patientName: p.name,
-                                appointmentDateTime: 'Last visit: ${p.lastVisit}',
-                                reason: '${p.consultations} consultation(s) with your practice',
-                                practicePhone: p.phone,
-                                mockAge: mock.age,
-                                mockGender: mock.gender,
-                                mockAiSummary: mock.summary,
-                              ),
-                            ),
-                          );
-                        },
-                        child: const Text('View Profile', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 10)),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DoctorPatientAppointmentDetailPage extends StatelessWidget {
-  const _DoctorPatientAppointmentDetailPage({
-    required this.patientName,
-    required this.appointmentDateTime,
-    required this.reason,
-    required this.mockAge,
-    required this.mockGender,
-    required this.mockAiSummary,
-    this.practicePhone,
-  });
-
-  final String patientName;
-  final String appointmentDateTime;
-  final String reason;
-  final String mockAge;
-  final String mockGender;
-  final String mockAiSummary;
-  final String? practicePhone;
-
-  @override
-  Widget build(BuildContext context) {
-    Widget sectionTitle(String t) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(t, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.black)),
-      );
-    }
-
-    Widget infoRow(String label, String value) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: RichText(
-          text: TextSpan(
-            style: const TextStyle(fontSize: 15, color: Color(0xFF374151), height: 1.35),
-            children: [
-              TextSpan(text: '$label: ', style: const TextStyle(fontWeight: FontWeight.w600)),
-              TextSpan(text: value),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Patient details'),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
-        elevation: 0,
-        surfaceTintColor: Colors.white,
-      ),
-      backgroundColor: const Color(0xFFF4F6F8),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          sectionTitle('Patient'),
-          infoRow('Name', patientName),
-          infoRow('Age', mockAge),
-          infoRow('Gender', mockGender),
-          if (practicePhone != null && practicePhone!.isNotEmpty) infoRow('Phone', practicePhone!),
-          const SizedBox(height: 20),
-          sectionTitle('AI scalp analysis (summary)'),
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
+    return StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+      stream: FirebaseService.getAppointmentsForDoctor(widget.doctorId),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
             child: Text(
-              mockAiSummary,
-              style: const TextStyle(fontSize: 15, color: Color(0xFF374151), height: 1.4),
+              'Could not load patients.\n${snap.error}',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600),
             ),
-          ),
-          const SizedBox(height: 20),
-          sectionTitle('Appointment'),
-          infoRow('Date & time', appointmentDateTime),
-          infoRow('Reason', reason),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.black,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          );
+        }
+        if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
+          return Center(child: CircularProgressIndicator(color: sh.textPrimary));
+        }
+        final all = practicePatientsFromAppointmentDocs(snap.data ?? const []);
+        final q = _search.text.trim().toLowerCase();
+        final filtered = q.isEmpty
+            ? all
+            : all.where((p) => p.displayName.toLowerCase().contains(q)).toList();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _search,
+              onChanged: (_) => setState(() {}),
+              style: TextStyle(color: sh.textPrimary),
+              decoration: InputDecoration(
+                hintText: 'Search by patient name...',
+                hintStyle: TextStyle(color: sh.textSecondary),
+                prefixIcon: Icon(Icons.search, color: sh.textSecondary),
+                filled: true,
+                fillColor: sh.card,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: sh.border)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: sh.textPrimary),
+                ),
               ),
-              onPressed: () {
-                Navigator.of(context).push<void>(
-                  MaterialPageRoute<void>(
-                    builder: (ctx) => const ScalpReportDetailScreen(reportId: 'doctor-preview'),
-                  ),
-                );
-              },
-              child: const Text('View Full AI Report', style: TextStyle(fontWeight: FontWeight.w700)),
             ),
-          ),
-        ],
-      ),
+            const SizedBox(height: 14),
+            Expanded(
+              child: filtered.isEmpty
+                  ? Center(
+                      child: Text(
+                        all.isEmpty
+                            ? 'Patients appear here after you confirm their appointments.'
+                            : 'No patients match your search.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: sh.textSecondary, fontWeight: FontWeight.w600, fontSize: 15),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final p = filtered[index];
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: sh.card,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: sh.border),
+                            boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 8, offset: Offset(0, 2))],
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: sh.sidebarSelectedBg,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: sh.border),
+                                ),
+                                child: Text(
+                                  p.displayName.isNotEmpty ? p.displayName[0].toUpperCase() : '?',
+                                  style: TextStyle(color: sh.textPrimary, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _DoctorPatientTitle(
+                                      fallback: p.displayName,
+                                      userId: p.userId,
+                                      style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Last visit: ${p.lastVisit} • ${p.consultations} consultation(s)',
+                                      style: TextStyle(color: sh.textSecondary, fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              SizedBox(
+                                width: 88,
+                                height: 30,
+                                child: TextButton(
+                                  style: TextButton.styleFrom(
+                                    backgroundColor: sh.sidebarSelectedBg,
+                                    foregroundColor: sh.textPrimary,
+                                    padding: EdgeInsets.zero,
+                                    minimumSize: const Size(88, 30),
+                                    fixedSize: const Size(88, 30),
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    side: BorderSide(color: sh.border),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  onPressed: () {
+                                    openDoctorPatientClinical(
+                                      context,
+                                      patientUserId: p.userId,
+                                      patientName: p.displayName,
+                                      appointmentDateTime: p.lastVisit,
+                                      reason: '${p.consultations} confirmed consultation(s)',
+                                      canViewReport: true,
+                                    );
+                                  },
+                                  child: const Text('View Profile', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 10)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

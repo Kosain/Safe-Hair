@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 
 import '../core/demo_accounts.dart';
 import '../firebase_options.dart';
@@ -374,6 +375,8 @@ class FirebaseService {
   // ============ Doctors (separate collection) ============
   /// Cleared on each successful save; explains last failure for UI.
   static String? lastDoctorProfileSaveError;
+  /// Set when patient "Book a doctor" list load fails or returns empty.
+  static String? lastDoctorsListError;
 
   /// Returns `true` if the write succeeded (or was skipped because Firebase is off).
   static Future<bool> saveDoctorProfile(Map<String, dynamic> data) async {
@@ -438,10 +441,13 @@ class FirebaseService {
     try {
       final existing = await firestore.collection('doctors').doc(uid).get();
       if (existing.exists) {
-        await firestore.collection('doctors').doc(uid).set(
-          {'profileCompleted': true, 'userId': uid, 'email': email.trim()},
-          SetOptions(merge: true),
-        );
+        final d = Map<String, dynamic>.from(existing.data() ?? {});
+        final patch = <String, dynamic>{'userId': uid, 'email': email.trim()};
+        if (d['profileCompleted'] == true || meta != null) {
+          patch['profileCompleted'] = true;
+          patch['bookable'] = true;
+        }
+        await firestore.collection('doctors').doc(uid).set(patch, SetOptions(merge: true));
         return true;
       }
       final byEmail = await firestore
@@ -457,7 +463,22 @@ class FirebaseService {
         await firestore.collection('doctors').doc(uid).set(data, SetOptions(merge: true));
         return true;
       }
-      if (meta == null) return false;
+      // Any signed-in doctor: ensure a starter row so patient booking can find them after onboarding.
+      final display = (displayName ?? '').trim();
+      final fallbackName = display.isNotEmpty ? display : email.split('@').first;
+      await firestore.collection('doctors').doc(uid).set({
+        'userId': uid,
+        'role': 'doctor',
+        'email': email.trim(),
+        'fullName': fallbackName,
+        'clinicName': 'Clinic',
+        'city': '',
+        'consultationFee': 0,
+        'profileCompleted': false,
+        'bookable': false,
+        'updatedAt': DateTime.now().toIso8601String(),
+      }, SetOptions(merge: true));
+      if (meta == null) return true;
       await firestore.collection('doctors').doc(uid).set({
         'userId': uid,
         'role': 'doctor',
@@ -520,13 +541,34 @@ class FirebaseService {
     return data;
   }
 
+  /// True when a row is safe to show in patient booking (completed profile or enough display fields).
+  static bool isBookableDoctorRow(Map<String, dynamic> data) {
+    if (data['bookable'] == false) return false;
+    if (data['profileCompleted'] == true) return true;
+    final name = (data['fullName'] ?? data['name'] ?? '').toString().trim();
+    final clinic = (data['clinicName'] ?? data['clinic_name'] ?? '').toString().trim();
+    if (name.isNotEmpty && clinic.isNotEmpty) return true;
+    final email = (data['email'] ?? '').toString().trim();
+    return name.isNotEmpty && email.isNotEmpty;
+  }
+
+  static List<Map<String, dynamic>> _filterBookableDoctorRows(List<Map<String, dynamic>> rows) {
+    final out = rows.where(isBookableDoctorRow).toList();
+    out.sort((a, b) {
+      final ac = a['profileCompleted'] == true ? 1 : 0;
+      final bc = b['profileCompleted'] == true ? 1 : 0;
+      if (ac != bc) return bc.compareTo(ac);
+      return (a['fullName'] ?? '').toString().compareTo((b['fullName'] ?? '').toString());
+    });
+    _sortDoctorRowsForPicker(out);
+    return out;
+  }
+
   static Future<List<Map<String, dynamic>>> getVerifiedDoctorsOnce() async {
     if (!_initialized) return [];
     try {
       final snap = await firestore.collection('doctors').where('profileCompleted', isEqualTo: true).get();
-      final rows = snap.docs.map(_doctorRowFromDoc).toList();
-      _sortDoctorRowsForPicker(rows);
-      return rows;
+      return _filterBookableDoctorRows(snap.docs.map(_doctorRowFromDoc).toList());
     } on FirebaseException catch (e) {
       debugPrint('getVerifiedDoctorsOnce: ${e.code} ${e.message}');
     } catch (e, st) {
@@ -535,14 +577,17 @@ class FirebaseService {
     return [];
   }
 
+  static int _intFromFirestoreField(Map<String, dynamic> m, String key) {
+    final v = m[key];
+    if (v == null) return 0;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? 0;
+  }
+
   static void _sortDoctorRowsForPicker(List<Map<String, dynamic>> rows) {
     rows.sort((a, b) {
-      final ac = ((a['activeDoctorsCount'] ?? 0) is num)
-          ? (a['activeDoctorsCount'] as num).toInt()
-          : int.tryParse('${a['activeDoctorsCount'] ?? 0}') ?? 0;
-      final bc = ((b['activeDoctorsCount'] ?? 0) is num)
-          ? (b['activeDoctorsCount'] as num).toInt()
-          : int.tryParse('${b['activeDoctorsCount'] ?? 0}') ?? 0;
+      final ac = _intFromFirestoreField(a, 'activeDoctorsCount');
+      final bc = _intFromFirestoreField(b, 'activeDoctorsCount');
       return bc.compareTo(ac);
     });
   }
@@ -565,7 +610,6 @@ class FirebaseService {
             'clinicName': (d['clinicName'] ?? d['clinic_name'] ?? 'Clinic').toString(),
             'city': (d['city'] ?? '').toString(),
             'consultationFee': d['consultationFee'] ?? d['consultation_fee'] ?? 0,
-            'rating': 4.5,
           },
         );
       }
@@ -581,29 +625,51 @@ class FirebaseService {
   /// For patient booking UIs. Uses verified doctors first; if none, any `doctors/{uid}` so [id] is always a real
   /// Firebase uid — never placeholder strings like `d1` or `1`, which would make the doctor dashboard query empty.
   static Future<List<Map<String, dynamic>>> getDoctorsForPatientBookingOnce({String? patientUserId}) async {
-    if (!_initialized) return [];
+    lastDoctorsListError = null;
+    if (!_initialized) {
+      lastDoctorsListError = 'Firebase is not initialized.';
+      return [];
+    }
     try {
       final verified = await getVerifiedDoctorsOnce();
       if (verified.isNotEmpty) return verified;
 
       final snap = await firestore.collection('doctors').limit(100).get();
-      if (snap.docs.isNotEmpty) {
-        final rows = snap.docs.map(_doctorRowFromDoc).toList();
-        _sortDoctorRowsForPicker(rows);
-        return rows;
+      final rows = _filterBookableDoctorRows(snap.docs.map(_doctorRowFromDoc).toList());
+      if (rows.isNotEmpty) return rows;
+
+      // Some builds only set role + email until onboarding finishes.
+      try {
+        final byRole = await firestore.collection('doctors').where('role', isEqualTo: 'doctor').limit(100).get();
+        final roleRows = _filterBookableDoctorRows(byRole.docs.map(_doctorRowFromDoc).toList());
+        if (roleRows.isNotEmpty) return roleRows;
+      } on FirebaseException catch (e) {
+        debugPrint('getDoctorsForPatientBookingOnce role query: ${e.code}');
       }
 
       if (patientUserId != null && patientUserId.isNotEmpty) {
         final fromHistory = await getBookableDoctorsFromAppointmentHistory(patientUserId);
         if (fromHistory.isNotEmpty) return fromHistory;
       }
+
+      if (snap.docs.isEmpty) {
+        lastDoctorsListError =
+            'No doctor profiles in Firestore yet. Sign in as the doctor, complete all 6 registration steps, and save on the last step — then tap Refresh here.';
+      } else {
+        lastDoctorsListError =
+            'Doctor profile(s) exist but are not bookable yet (finish registration: name, clinic, and save on step 6).';
+      }
     } on FirebaseException catch (e) {
       debugPrint('getDoctorsForPatientBookingOnce: ${e.code} ${e.message}');
+      lastDoctorsListError = e.code == 'permission-denied'
+          ? 'Permission denied reading doctors. Deploy Firestore rules: firebase deploy --only firestore:rules'
+          : 'Could not load doctors (${e.code}).';
       if (e.code == 'permission-denied' && patientUserId != null && patientUserId.isNotEmpty) {
         return getBookableDoctorsFromAppointmentHistory(patientUserId);
       }
     } catch (e, st) {
       debugPrint('getDoctorsForPatientBookingOnce: $e\n$st');
+      lastDoctorsListError = 'Could not load doctors: $e';
     }
     return [];
   }
@@ -1222,6 +1288,26 @@ class FirebaseService {
     }
   }
 
+  /// Latest scalp report for a patient (for doctor clinical view).
+  static Future<(String reportId, Map<String, dynamic> data)?> getLatestPatientReport(String userId) async {
+    if (!_initialized || userId.trim().isEmpty) return null;
+    try {
+      final snap = await firestore
+          .collection('patient_details')
+          .doc(userId)
+          .collection('reports')
+          .orderBy('createdAt', descending: true)
+          .limit(1)
+          .get();
+      if (snap.docs.isEmpty) return null;
+      final doc = snap.docs.first;
+      return (doc.id, doc.data());
+    } catch (e, st) {
+      debugPrint('getLatestPatientReport: $e\n$st');
+      return null;
+    }
+  }
+
   static String? lastHairAnalysisSaveError;
 
   /// Persists latest metrics on [patient_details], appends [hair_scans], adds [reports] doc (batch).
@@ -1304,4 +1390,244 @@ class FirebaseService {
       return false;
     }
   }
+
+  // ============ Doctor reviews (patient → doctor after appointment) ============
+
+  static DateTime? _parseAppointmentStart(String dateIso, String timeSlot) {
+    final dateStr = dateIso.trim();
+    if (dateStr.isEmpty) return null;
+    DateTime day;
+    try {
+      day = DateTime.parse(dateStr);
+    } catch (_) {
+      return null;
+    }
+    final t = timeSlot.trim();
+    if (t.isEmpty) return DateTime(day.year, day.month, day.day);
+    for (final pattern in ['h:mm a', 'hh:mm a', 'H:mm', 'HH:mm']) {
+      try {
+        final parsed = DateFormat(pattern).parse(t);
+        return DateTime(day.year, day.month, day.day, parsed.hour, parsed.minute);
+      } catch (_) {}
+    }
+    return DateTime(day.year, day.month, day.day);
+  }
+
+  static Future<bool> hasReviewForAppointment(String appointmentId) async {
+    if (!_initialized || appointmentId.isEmpty) return false;
+    try {
+      final snap = await firestore
+          .collection('doctor_reviews')
+          .where('appointmentId', isEqualTo: appointmentId)
+          .limit(1)
+          .get();
+      return snap.docs.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> hasPatientReviewedDoctor({
+    required String patientUserId,
+    required String doctorId,
+  }) async {
+    if (!_initialized || patientUserId.isEmpty || doctorId.isEmpty) return false;
+    try {
+      final snap = await firestore
+          .collection('doctor_reviews')
+          .where('userId', isEqualTo: patientUserId)
+          .where('doctorId', isEqualTo: doctorId)
+          .limit(1)
+          .get();
+      return snap.docs.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> hasReviewPromptShownForDoctor({
+    required String patientUserId,
+    required String doctorId,
+  }) async {
+    if (!_initialized || patientUserId.isEmpty || doctorId.isEmpty) return false;
+    try {
+      final snap = await firestore.collection('patient_details').doc(patientUserId).get();
+      final data = snap.data();
+      final shown = data?['reviewPromptShownDoctorIds'];
+      if (shown is! List) return false;
+      return shown.map((e) => e.toString()).contains(doctorId);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// First past appointment without a review (for post-visit prompt).
+  static Future<PendingDoctorReview?> getNextPendingDoctorReview(String patientUserId) async {
+    if (!_initialized || patientUserId.isEmpty) return null;
+    try {
+      final snap = await firestore
+          .collection('appointments')
+          .where('userId', isEqualTo: patientUserId)
+          .limit(80)
+          .get();
+      final now = DateTime.now();
+      final pending = <({DateTime end, String docId, Map<String, dynamic> data})>[];
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        final status = (d['status'] ?? '').toString().toLowerCase();
+        if (status == 'cancelled' || status == 'declined') continue;
+        final start = _parseAppointmentStart(
+          (d['date'] ?? '').toString(),
+          (d['timeSlot'] ?? d['time'] ?? '').toString(),
+        );
+        if (start == null) continue;
+        final end = start.add(const Duration(minutes: 45));
+        if (!now.isAfter(end)) continue;
+        pending.add((end: end, docId: doc.id, data: d));
+      }
+      pending.sort((a, b) => b.end.compareTo(a.end));
+      for (final row in pending) {
+        final prompted = row.data['reviewPromptShown'] == true;
+        if (prompted) continue;
+        if (await hasReviewForAppointment(row.docId)) continue;
+        final doctorId = (row.data['doctorId'] ?? row.data['doctorID'] ?? '').toString();
+        if (doctorId.isEmpty) continue;
+        final reviewedDoctor = await hasPatientReviewedDoctor(
+          patientUserId: patientUserId,
+          doctorId: doctorId,
+        );
+        if (reviewedDoctor) continue;
+        final promptedDoctor = await hasReviewPromptShownForDoctor(
+          patientUserId: patientUserId,
+          doctorId: doctorId,
+        );
+        if (promptedDoctor) continue;
+        return PendingDoctorReview(
+          appointmentId: row.docId,
+          doctorId: doctorId,
+          patientUserId: patientUserId,
+          doctorName: (row.data['doctorName'] ?? row.data['doctor_name'] ?? 'Doctor').toString(),
+          dateLabel: (row.data['date'] ?? '').toString(),
+          timeSlot: (row.data['timeSlot'] ?? row.data['time'] ?? '').toString(),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('getNextPendingDoctorReview: $e\n$st');
+    }
+    return null;
+  }
+
+  /// Marks that review prompt has already been shown for this appointment.
+  static Future<void> markReviewPromptShown(String appointmentId) async {
+    if (!_initialized || appointmentId.trim().isEmpty) return;
+    try {
+      await firestore.collection('appointments').doc(appointmentId).set({
+        'reviewPromptShown': true,
+      }, SetOptions(merge: true));
+    } catch (e, st) {
+      debugPrint('markReviewPromptShown: $e\n$st');
+    }
+  }
+
+  /// Marks one-time review prompt already shown for this doctor (per patient).
+  static Future<void> markReviewPromptShownForDoctor({
+    required String patientUserId,
+    required String doctorId,
+  }) async {
+    if (!_initialized || patientUserId.trim().isEmpty || doctorId.trim().isEmpty) return;
+    try {
+      await firestore.collection('patient_details').doc(patientUserId).set({
+        'reviewPromptShownDoctorIds': FieldValue.arrayUnion([doctorId]),
+      }, SetOptions(merge: true));
+    } catch (e, st) {
+      debugPrint('markReviewPromptShownForDoctor: $e\n$st');
+    }
+  }
+
+  static Future<bool> submitDoctorReview({
+    required String appointmentId,
+    required String doctorId,
+    required String patientUserId,
+    required int stars,
+    required String comment,
+    String? doctorName,
+  }) async {
+    if (!_initialized) return false;
+    if (appointmentId.isEmpty || doctorId.isEmpty || patientUserId.isEmpty) return false;
+    if (stars < 1 || stars > 5) return false;
+    try {
+      if (await hasReviewForAppointment(appointmentId)) return true;
+      await firestore.collection('doctor_reviews').add({
+        'appointmentId': appointmentId,
+        'doctorId': doctorId,
+        'userId': patientUserId,
+        'stars': stars,
+        'comment': comment.trim(),
+        'doctorName': doctorName?.trim() ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return true;
+    } catch (e, st) {
+      debugPrint('submitDoctorReview: $e\n$st');
+      return false;
+    }
+  }
+
+  static Future<Map<String, DoctorRatingSummary>> getDoctorRatingSummaries(Iterable<String> doctorIds) async {
+    final ids = doctorIds.where((e) => e.trim().isNotEmpty).toSet();
+    if (ids.isEmpty || !_initialized) return {};
+    final byDoctor = <String, List<int>>{};
+    try {
+      final snap = await firestore.collection('doctor_reviews').limit(500).get();
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        final did = (d['doctorId'] ?? '').toString();
+        if (!ids.contains(did)) continue;
+        final stars = (d['stars'] as num?)?.toInt() ?? int.tryParse('${d['stars']}') ?? 0;
+        if (stars < 1 || stars > 5) continue;
+        byDoctor.putIfAbsent(did, () => []).add(stars);
+      }
+    } catch (e, st) {
+      debugPrint('getDoctorRatingSummaries: $e\n$st');
+    }
+    final out = <String, DoctorRatingSummary>{};
+    for (final id in ids) {
+      final list = byDoctor[id];
+      if (list == null || list.isEmpty) {
+        out[id] = const DoctorRatingSummary(average: 0, count: 0);
+      } else {
+        final sum = list.fold<int>(0, (a, b) => a + b);
+        out[id] = DoctorRatingSummary(average: sum / list.length, count: list.length);
+      }
+    }
+    return out;
+  }
+}
+
+/// Completed appointment eligible for a patient review prompt.
+class PendingDoctorReview {
+  const PendingDoctorReview({
+    required this.appointmentId,
+    required this.doctorId,
+    required this.patientUserId,
+    required this.doctorName,
+    required this.dateLabel,
+    required this.timeSlot,
+  });
+
+  final String appointmentId;
+  final String doctorId;
+  final String patientUserId;
+  final String doctorName;
+  final String dateLabel;
+  final String timeSlot;
+}
+
+class DoctorRatingSummary {
+  const DoctorRatingSummary({required this.average, required this.count});
+
+  final double average;
+  final int count;
+
+  bool get hasReviews => count > 0;
 }

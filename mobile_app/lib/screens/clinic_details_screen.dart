@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 
@@ -83,24 +84,25 @@ class _ClinicDetailsScreenState extends State<ClinicDetailsScreen> {
     setState(() => _loading = false);
   }
 
-  InputDecoration _fieldDecoration(String label) {
+  InputDecoration _fieldDecoration(BuildContext context, String label) {
+    final sh = context.sh;
     return InputDecoration(
       labelText: label,
-      labelStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Colors.black87),
+      labelStyle: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
       filled: true,
-      fillColor: Colors.white,
+      fillColor: sh.scaffold,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade400),
+        borderSide: BorderSide(color: sh.border),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade400),
+        borderSide: BorderSide(color: sh.border),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Colors.black, width: 1.2),
+        borderSide: BorderSide(color: sh.textPrimary, width: 1.2),
       ),
     );
   }
@@ -153,32 +155,33 @@ class _ClinicDetailsScreenState extends State<ClinicDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     return Scaffold(
-      backgroundColor: Colors.grey.shade50,
+      backgroundColor: sh.scaffold,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
+        backgroundColor: sh.appBar,
+        surfaceTintColor: sh.appBar,
         elevation: 0,
         leading: IconButton(
           onPressed: () => context.pop(),
-          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black),
+          icon: Icon(Icons.arrow_back_ios_new, color: sh.textPrimary),
         ),
-        title: const Text(
+        title: Text(
           'Clinic Details',
-          style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600, fontSize: 19),
+          style: TextStyle(color: sh.textPrimary, fontWeight: FontWeight.w600, fontSize: 19),
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: CircularProgressIndicator(color: sh.textPrimary))
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
               children: [
                 Card(
                   elevation: 0,
-                  color: Colors.white,
+                  color: sh.card,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(color: Colors.grey.shade300),
+                    side: BorderSide(color: sh.border),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(16),
@@ -187,30 +190,32 @@ class _ClinicDetailsScreenState extends State<ClinicDetailsScreen> {
                       children: [
                         TextField(
                           controller: _name,
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Colors.black87),
-                          decoration: _fieldDecoration('Clinic / Hospital Name'),
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
+                          decoration: _fieldDecoration(context, 'Clinic / Hospital Name'),
                         ),
                         const SizedBox(height: 14),
                         TextField(
                           controller: _address,
                           minLines: 3,
                           maxLines: 5,
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Colors.black87),
-                          decoration: _fieldDecoration('Clinic Address'),
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
+                          decoration: _fieldDecoration(context, 'Clinic Address'),
                         ),
                         const SizedBox(height: 14),
                         InputDecorator(
-                          decoration: _fieldDecoration('City'),
+                          decoration: _fieldDecoration(context, 'City'),
                           child: DropdownButtonHideUnderline(
                             child: DropdownButton<String>(
                               isExpanded: true,
+                              dropdownColor: sh.card,
                               borderRadius: BorderRadius.circular(8),
                               value: _pkCities.contains(_city) ? _city : 'Karachi',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
                               items: _pkCities
                                   .map(
                                     (c) => DropdownMenuItem(
                                       value: c,
-                                      child: Text(c, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                                      child: Text(c, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary)),
                                     ),
                                   )
                                   .toList(),
@@ -224,15 +229,15 @@ class _ClinicDetailsScreenState extends State<ClinicDetailsScreen> {
                         TextField(
                           controller: _phone,
                           keyboardType: TextInputType.phone,
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Colors.black87),
-                          decoration: _fieldDecoration('Clinic Phone Number'),
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
+                          decoration: _fieldDecoration(context, 'Clinic Phone Number'),
                         ),
                         const SizedBox(height: 14),
                         TextField(
                           controller: _fee,
                           keyboardType: TextInputType.number,
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Colors.black87),
-                          decoration: _fieldDecoration('Consultation Fee (PKR)'),
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: sh.textPrimary),
+                          decoration: _fieldDecoration(context, 'Consultation Fee (PKR)'),
                         ),
                       ],
                     ),
@@ -244,16 +249,16 @@ class _ClinicDetailsScreenState extends State<ClinicDetailsScreen> {
                   child: ElevatedButton(
                     onPressed: _saving ? null : _save,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
-                      foregroundColor: Colors.white,
+                      backgroundColor: sh.selectedNavBg,
+                      foregroundColor: sh.selectedNavFg,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                     ),
                     child: _saving
-                        ? const SizedBox(
+                        ? SizedBox(
                             height: 22,
                             width: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: sh.selectedNavFg),
                           )
                         : const Text('Save', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
                   ),

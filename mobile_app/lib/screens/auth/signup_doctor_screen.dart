@@ -297,7 +297,11 @@ class _SignupDoctorScreenState extends State<SignupDoctorScreen> {
       'role': 'doctor',
       'fullName': auth.userName ?? email.split('@').first,
       'email': email,
+      'clinicName': 'Clinic',
+      'city': '',
+      'consultationFee': 0,
       'profileCompleted': false,
+      'bookable': false,
     }).timeout(
       const Duration(seconds: 18),
       onTimeout: () {

@@ -333,6 +333,7 @@ class DoctorRegistrationProvider extends ChangeNotifier {
       }(),
       'remindMeBeforeMinutes': remindMeBeforeMinutes,
       'profileCompleted': true,
+      'bookable': true,
       'profileCompletedAt': DateTime.now().toIso8601String(),
       'isVerified': false,
       'createdAt': FieldValue.serverTimestamp(),

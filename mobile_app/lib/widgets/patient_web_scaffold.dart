@@ -10,8 +10,9 @@ import '../core/safe_hair_colors.dart';
 import '../l10n/tr.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
+import 'doctor_review_dialog.dart';
 
-class PatientWebScaffold extends StatelessWidget {
+class PatientWebScaffold extends StatefulWidget {
   const PatientWebScaffold({
     super.key,
     required this.currentRoute,
@@ -35,11 +36,44 @@ class PatientWebScaffold extends StatelessWidget {
   final double extraScrollBottomPadding;
 
   @override
+  State<PatientWebScaffold> createState() => _PatientWebScaffoldState();
+}
+
+class _PatientWebScaffoldState extends State<PatientWebScaffold> {
+  bool _reviewPromptChecked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybePromptDoctorReview());
+  }
+
+  Future<void> _maybePromptDoctorReview() async {
+    if (_reviewPromptChecked) return;
+    _reviewPromptChecked = true;
+    if (!mounted) return;
+    if (!widget.currentRoute.startsWith('/my-appointments')) return;
+    final auth = context.read<AuthProvider>();
+    if (auth.role != 'patient') return;
+    final uid = auth.userId;
+    if (uid == null || uid.isEmpty || !FirebaseService.isInitialized) return;
+    final pending = await FirebaseService.getNextPendingDoctorReview(uid);
+    if (!mounted || pending == null) return;
+    await FirebaseService.markReviewPromptShownForDoctor(
+      patientUserId: uid,
+      doctorId: pending.doctorId,
+    );
+    await FirebaseService.markReviewPromptShown(pending.appointmentId);
+    if (!mounted) return;
+    await showDoctorReviewDialog(context, pending: pending);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final sh = context.sh;
     final auth = context.watch<AuthProvider>();
     final name = auth.userName ?? 'User';
-    final scaffoldBg = Theme.of(context).brightness == Brightness.dark ? sh.scaffold : backgroundColor;
+    final scaffoldBg = Theme.of(context).brightness == Brightness.dark ? sh.scaffold : widget.backgroundColor;
     final photoUrl = auth.userPhotoUrl;
     final photoBytes = auth.userPhotoBytes;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -48,17 +82,17 @@ class PatientWebScaffold extends StatelessWidget {
       isDesktop ? 24 : 16,
       16,
       isDesktop ? 24 : 16,
-      24 + extraScrollBottomPadding,
+      24 + widget.extraScrollBottomPadding,
     );
 
     Widget scrollChild = SingleChildScrollView(
-      controller: bodyScrollController,
+      controller: widget.bodyScrollController,
       padding: scrollPadding,
-      child: body,
+      child: widget.body,
     );
-    if (showScrollbar && bodyScrollController != null) {
+    if (widget.showScrollbar && widget.bodyScrollController != null) {
       scrollChild = Scrollbar(
-        controller: bodyScrollController,
+        controller: widget.bodyScrollController,
         thumbVisibility: true,
         child: scrollChild,
       );
@@ -76,7 +110,7 @@ class PatientWebScaffold extends StatelessWidget {
 
     if (!isDesktop) {
       return Scaffold(
-        drawer: _Sidebar(currentRoute: currentRoute, inDrawer: true),
+        drawer: _Sidebar(currentRoute: widget.currentRoute, inDrawer: true),
         body: Stack(
           children: [
             Positioned.fill(child: content),
@@ -84,24 +118,24 @@ class PatientWebScaffold extends StatelessWidget {
               left: 0,
               right: 0,
               bottom: 0,
-              child: _PatientFloatingBottomNav(currentRoute: currentRoute),
+              child: _PatientFloatingBottomNav(currentRoute: widget.currentRoute),
             ),
           ],
         ),
-        floatingActionButton: floatingActionButton,
-        floatingActionButtonLocation: floatingActionButtonLocation,
+        floatingActionButton: widget.floatingActionButton,
+        floatingActionButtonLocation: widget.floatingActionButtonLocation,
       );
     }
 
     return Scaffold(
       body: Row(
         children: [
-          _Sidebar(currentRoute: currentRoute, inDrawer: false),
+          _Sidebar(currentRoute: widget.currentRoute, inDrawer: false),
           Expanded(child: content),
         ],
       ),
-      floatingActionButton: floatingActionButton,
-      floatingActionButtonLocation: floatingActionButtonLocation,
+      floatingActionButton: widget.floatingActionButton,
+      floatingActionButtonLocation: widget.floatingActionButtonLocation,
     );
   }
 }

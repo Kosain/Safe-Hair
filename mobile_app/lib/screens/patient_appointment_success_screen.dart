@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../widgets/patient_web_scaffold.dart';
 
 class PatientAppointmentSuccessScreen extends StatelessWidget {
@@ -21,6 +22,7 @@ class PatientAppointmentSuccessScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     final route = GoRouterState.of(context).matchedLocation;
     return PatientWebScaffold(
       currentRoute: route,
@@ -52,9 +54,9 @@ class PatientAppointmentSuccessScreen extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.fromLTRB(24, 24, 24, 18),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: sh.card,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFFE8E8E8)),
+                  border: Border.all(color: sh.border),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -69,17 +71,17 @@ class PatientAppointmentSuccessScreen extends StatelessWidget {
                       child: const Icon(Icons.thumb_up, color: Colors.white, size: 32),
                     ),
                     const SizedBox(height: 16),
-                    const Text('Thank you!', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                    Text('Thank you!', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: sh.textPrimary)),
                     const SizedBox(height: 8),
                     Text(
                       'Waiting for the doctor to confirm',
-                      style: TextStyle(fontSize: 15, color: Colors.blueGrey.shade700, fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 15, color: sh.textPrimary, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 10),
                     Text(
                       'We sent your request to $doctorName for $date at $time${(reminder ?? '').isNotEmpty ? ' (reminder $reminder before)' : ''}. You will get an in-app update when they respond.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 14, color: Colors.grey.shade800, height: 1.35),
+                      style: TextStyle(fontSize: 14, color: sh.textSecondary, height: 1.35),
                     ),
                     const SizedBox(height: 22),
                     SizedBox(
@@ -87,8 +89,8 @@ class PatientAppointmentSuccessScreen extends StatelessWidget {
                       child: ElevatedButton(
                         onPressed: () => context.go('/my-appointments'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.black,
-                          foregroundColor: Colors.white,
+                          backgroundColor: sh.selectedNavBg,
+                          foregroundColor: sh.selectedNavFg,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
@@ -107,7 +109,7 @@ class PatientAppointmentSuccessScreen extends StatelessWidget {
                       },
                       child: Text(
                         'Book another time',
-                        style: TextStyle(color: Colors.blueGrey.shade600, fontSize: 13),
+                        style: TextStyle(color: sh.textPrimary, fontSize: 13, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],

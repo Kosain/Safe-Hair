@@ -59,6 +59,11 @@ class SettingsScreen extends StatelessWidget {
     final tiles = <Widget>[
       if (isDoctor) ...[
         _SettingsNavTile(
+          icon: Icons.person,
+          titleKey: 'profile',
+          onTap: () => context.push('/doctor-profile'),
+        ),
+        _SettingsNavTile(
           icon: Icons.business,
           titleKey: 'clinic_details',
           onTap: () => context.push('/settings/clinic-details'),
@@ -201,10 +206,17 @@ class _NotificationsSettingsScreenState extends State<NotificationsSettingsScree
     final isDoctor = context.watch<AuthProvider>().role == 'doctor';
     final sh = context.sh;
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final switchTheme = SwitchThemeData(
       thumbColor: WidgetStateProperty.all(Colors.white),
+      trackOutlineColor: WidgetStateProperty.all(isDark ? sh.border : Colors.grey.shade500),
       trackColor: WidgetStateProperty.resolveWith(
-        (s) => s.contains(WidgetState.selected) ? sh.selectedNavBg : Colors.grey.shade400,
+        (s) {
+          if (s.contains(WidgetState.selected)) {
+            return isDark ? const Color(0xFF4DA3FF) : Colors.black;
+          }
+          return isDark ? const Color(0xFF3A4555) : Colors.grey.shade400;
+        },
       ),
     );
 

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
+import '../core/safe_hair_colors.dart';
 import '../providers/auth_provider.dart';
 import '../services/firebase_service.dart';
 
@@ -199,10 +200,11 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sh = context.sh;
     if (_loading) {
-      return const Scaffold(
-        backgroundColor: Color(0xFFF7F7F7),
-        body: Center(child: CircularProgressIndicator()),
+      return Scaffold(
+        backgroundColor: sh.scaffold,
+        body: Center(child: CircularProgressIndicator(color: sh.textPrimary)),
       );
     }
 
@@ -211,15 +213,15 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
         : 'DD MM YYYY';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: sh.scaffold,
       appBar: AppBar(
-        title: const Text('Profile', style: TextStyle(fontWeight: FontWeight.w700, color: Colors.black)),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        title: Text('Profile', style: TextStyle(fontWeight: FontWeight.w700, color: sh.textPrimary)),
+        backgroundColor: sh.appBar,
+        foregroundColor: sh.textPrimary,
         elevation: 0,
-        surfaceTintColor: Colors.white,
+        surfaceTintColor: sh.appBar,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded),
+          icon: Icon(Icons.arrow_back_ios_new_rounded, color: sh.textPrimary),
           onPressed: () => context.pop(),
         ),
       ),
@@ -231,9 +233,9 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
             Container(
               padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: sh.card,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey.shade200),
+                border: Border.all(color: sh.border),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withValues(alpha: 0.06),
@@ -244,11 +246,11 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
               ),
               child: Column(
                 children: [
-                  const Text(
+                  Text(
                     'Set up your profile',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: Colors.black,
+                      color: sh.textPrimary,
                       fontSize: 22,
                       fontWeight: FontWeight.w700,
                     ),
@@ -257,7 +259,7 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
                   Text(
                     'Update your profile to connect your doctor with better impression.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey.shade700, fontSize: 13, height: 1.35),
+                    style: TextStyle(color: sh.textSecondary, fontSize: 13, height: 1.35),
                   ),
                   const SizedBox(height: 24),
                   GestureDetector(
@@ -269,11 +271,11 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
                         Container(
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            border: Border.all(color: Colors.grey.shade300, width: 2),
+                            border: Border.all(color: sh.border, width: 2),
                           ),
                           child: CircleAvatar(
                             radius: 52,
-                            backgroundColor: Colors.white,
+                            backgroundColor: sh.sidebarSelectedBg,
                             backgroundImage: _profileImageBytes != null
                                 ? MemoryImage(_profileImageBytes!)
                                 : (_profileImageUrl != null && _profileImageUrl!.isNotEmpty
@@ -281,7 +283,7 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
                                     : null),
                             child: (_profileImageBytes == null &&
                                     (_profileImageUrl == null || _profileImageUrl!.isEmpty))
-                                ? Icon(Icons.person, size: 52, color: Colors.grey.shade500)
+                                ? Icon(Icons.person, size: 52, color: sh.textSecondary)
                                 : null,
                           ),
                         ),
@@ -305,36 +307,36 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
               ),
             ),
             const SizedBox(height: 20),
-            const Text(
+            Text(
               'Personal information',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: sh.textPrimary),
             ),
             const SizedBox(height: 16),
             _LabeledFieldCard(
               label: 'Name',
               child: TextField(
                 controller: _nameController,
-                style: const TextStyle(fontSize: 16, color: Colors.black),
-                decoration: _profileFieldDecoration(),
+                style: TextStyle(fontSize: 16, color: sh.textPrimary),
+                decoration: _profileFieldDecoration(context),
               ),
             ),
             const SizedBox(height: 12),
             _LabeledFieldCard(
               label: 'Contact Number',
-              trailing: Icon(Icons.edit_outlined, size: 18, color: Colors.grey.shade700),
+              trailing: Icon(Icons.edit_outlined, size: 18, color: sh.textSecondary),
               child: TextField(
                 controller: _phoneController,
                 keyboardType: TextInputType.phone,
-                style: const TextStyle(fontSize: 16, color: Colors.black),
-                decoration: _profileFieldDecoration(),
+                style: TextStyle(fontSize: 16, color: sh.textPrimary),
+                decoration: _profileFieldDecoration(context),
               ),
             ),
             const SizedBox(height: 12),
             _LabeledFieldCard(
               label: 'Date of birth',
-              trailing: Icon(Icons.edit_outlined, size: 18, color: Colors.grey.shade700),
+              trailing: Icon(Icons.edit_outlined, size: 18, color: sh.textSecondary),
               child: Material(
-                color: Colors.white,
+                color: sh.card,
                 borderRadius: BorderRadius.circular(10),
                 child: InkWell(
                   onTap: _pickDob,
@@ -344,13 +346,13 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.grey.shade400),
+                      border: Border.all(color: sh.border),
                     ),
                     child: Text(
                       dobLabel,
                       style: TextStyle(
                         fontSize: 16,
-                        color: _dob != null ? Colors.black : Colors.grey.shade600,
+                        color: _dob != null ? sh.textPrimary : sh.textSecondary,
                       ),
                     ),
                   ),
@@ -363,8 +365,9 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
               child: TextField(
                 controller: _addressController,
                 maxLines: 4,
-                style: const TextStyle(fontSize: 16, color: Colors.black),
+                style: TextStyle(fontSize: 16, color: sh.textPrimary),
                 decoration: _profileFieldDecoration(
+                  context,
                   hint: 'Add details',
                 ),
               ),
@@ -375,16 +378,16 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
               child: ElevatedButton(
                 onPressed: _saving ? null : _save,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.black,
-                  foregroundColor: Colors.white,
+                  backgroundColor: sh.selectedNavBg,
+                  foregroundColor: sh.selectedNavFg,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
                 child: _saving
-                    ? const SizedBox(
+                    ? SizedBox(
                         height: 22,
                         width: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        child: CircularProgressIndicator(strokeWidth: 2, color: sh.selectedNavFg),
                       )
                     : const Text('Save', style: TextStyle(fontWeight: FontWeight.w700)),
               ),
@@ -395,23 +398,24 @@ class _PatientProfileEditScreenState extends State<PatientProfileEditScreen> {
     );
   }
 
-  static InputDecoration _profileFieldDecoration({String? hint}) {
+  static InputDecoration _profileFieldDecoration(BuildContext context, {String? hint}) {
+    final sh = context.sh;
     final border = OutlineInputBorder(
       borderRadius: BorderRadius.circular(10),
-      borderSide: BorderSide(color: Colors.grey.shade400),
+      borderSide: BorderSide(color: sh.border),
     );
     return InputDecoration(
       hintText: hint,
-      hintStyle: TextStyle(color: Colors.grey.shade500),
+      hintStyle: TextStyle(color: sh.textSecondary),
       isDense: true,
       filled: true,
-      fillColor: Colors.white,
+      fillColor: sh.card,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       border: border,
       enabledBorder: border,
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Colors.black87, width: 1.2),
+        borderSide: BorderSide(color: sh.textPrimary, width: 1.2),
       ),
     );
   }
@@ -456,10 +460,10 @@ class _LabeledFieldCard extends StatelessWidget {
           children: [
             Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.black87,
+                color: context.sh.textPrimary,
               ),
             ),
             const Spacer(),

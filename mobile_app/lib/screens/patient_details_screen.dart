@@ -25,6 +25,81 @@ class PatientDetailsScreen extends StatefulWidget {
 
 class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
   static const Color _fieldBg = Colors.white;
+  static const Color _fieldText = AppColors.textDark;
+  static const Color _fieldHint = AppColors.textGrey;
+  static const Color _fieldBorder = Color(0xFFE0E0E0);
+
+  /// Registration uses white cards on a green scaffold — always use light form colors
+  /// so text and radios stay visible when the app is in dark mode.
+  ThemeData _registrationFormTheme() {
+    return ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.light,
+      colorScheme: const ColorScheme.light(
+        primary: AppColors.darkButton,
+        onSurface: _fieldText,
+        surface: _fieldBg,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: _fieldBg,
+        hintStyle: const TextStyle(color: _fieldHint),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _fieldBorder),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _fieldBorder),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.darkButton, width: 1.5),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+      textTheme: const TextTheme(
+        bodyLarge: TextStyle(color: _fieldText, fontSize: 16),
+        bodyMedium: TextStyle(color: _fieldText, fontSize: 16),
+      ),
+      radioTheme: RadioThemeData(
+        fillColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) return AppColors.darkButton;
+          return _fieldHint;
+        }),
+      ),
+      checkboxTheme: CheckboxThemeData(
+        fillColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) return AppColors.darkButton;
+          return Colors.transparent;
+        }),
+        checkColor: WidgetStateProperty.all(Colors.white),
+        side: const BorderSide(color: _fieldHint, width: 1.5),
+      ),
+    );
+  }
+
+  InputDecoration _fieldDecoration({String? hint}) => InputDecoration(
+        filled: true,
+        fillColor: _fieldBg,
+        hintText: hint,
+        hintStyle: const TextStyle(color: _fieldHint),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _fieldBorder),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _fieldBorder),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.darkButton, width: 1.5),
+        ),
+      );
+
+  static const TextStyle _fieldTextStyle = TextStyle(color: _fieldText, fontSize: 16);
+
   int _step = 1;
   final _formKey = GlobalKey<FormState>();
   final _picker = ImagePicker();
@@ -76,7 +151,9 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
           constraints: BoxConstraints(maxWidth: Responsive.maxContentWidth(context) ?? double.infinity),
           child: SingleChildScrollView(
             padding: EdgeInsets.all(Responsive.horizontalPadding(context)),
-            child: Column(
+            child: Theme(
+              data: _registrationFormTheme(),
+              child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
@@ -148,6 +225,7 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
               ),
           ],
         ),
+            ),
       ),
     ),
     ),
@@ -236,13 +314,9 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
             const SizedBox(height: 8),
             TextFormField(
               initialValue: _name,
-              cursorColor: Colors.black,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: _fieldBg,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFF1F3F0))),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFF1F3F0))),
-              ),
+              style: _fieldTextStyle,
+              cursorColor: AppColors.darkButton,
+              decoration: _fieldDecoration(),
               onChanged: (v) => _name = v,
               validator: (v) => (v ?? '').isEmpty ? 'Required' : null,
             ),
@@ -277,9 +351,9 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
                   children: [
                     Transform.scale(
                       scale: 0.85,
-                      child: Radio<String>(value: g, groupValue: _gender, onChanged: (v) => setState(() => _gender = v), activeColor: AppColors.darkButton),
+                      child: Radio<String>(value: g, groupValue: _gender, onChanged: (v) => setState(() => _gender = v)),
                     ),
-                    Text(g),
+                    Text(g, style: const TextStyle(color: _fieldText, fontSize: 15)),
                   ],
                 );
               }).toList(),
@@ -300,8 +374,9 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
             const SizedBox(height: 8),
             TextFormField(
               initialValue: _address,
-              cursorColor: Colors.black,
-              decoration: const InputDecoration(hintText: 'House No#'),
+              style: _fieldTextStyle,
+              cursorColor: AppColors.darkButton,
+              decoration: _fieldDecoration(hint: 'House No#'),
               onChanged: (v) => _address = v,
             ),
           ],
@@ -314,13 +389,24 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
     return DropdownButtonFormField<T>(
       value: value,
       isExpanded: true,
-      decoration: InputDecoration(
-        hintText: hint,
+      style: _fieldTextStyle,
+      dropdownColor: _fieldBg,
+      iconEnabledColor: _fieldText,
+      decoration: _fieldDecoration(hint: hint).copyWith(
         contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-        filled: true,
-        fillColor: _fieldBg,
       ),
-      items: items.map((e) => DropdownMenuItem(value: e, child: Text(e.toString(), overflow: TextOverflow.ellipsis))).toList(),
+      items: items
+          .map(
+            (e) => DropdownMenuItem(
+              value: e,
+              child: Text(
+                e.toString(),
+                overflow: TextOverflow.ellipsis,
+                style: _fieldTextStyle,
+              ),
+            ),
+          )
+          .toList(),
       onChanged: onChanged,
     );
   }
@@ -368,9 +454,9 @@ class _PatientDetailsScreenState extends State<PatientDetailsScreen> {
               children: [
                 Transform.scale(
                   scale: 0.82,
-                  child: Radio<String>(value: o, groupValue: value, onChanged: onChanged, activeColor: AppColors.darkButton),
+                  child: Radio<String>(value: o, groupValue: value, onChanged: onChanged),
                 ),
-                Text(o, style: TextStyle(fontSize: 14, color: AppColors.textDark)),
+                Text(o, style: const TextStyle(fontSize: 14, color: _fieldText)),
               ],
             );
           }).toList(),
