@@ -4,9 +4,9 @@ import 'package:provider/provider.dart';
 
 import '../core/safe_hair_colors.dart';
 import '../l10n/tr.dart';
-import '../models/chat_models.dart';
 import '../providers/auth_provider.dart';
 import '../services/chat_service.dart';
+import '../services/firebase_service.dart';
 
 class ChatDetailScreen extends StatefulWidget {
   const ChatDetailScreen({
@@ -30,6 +30,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   void initState() {
     super.initState();
     ChatService.instance.addListener(_onChatChanged);
+    ChatService.instance.startListeningMessages(widget.conversationId);
     _markRead();
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
@@ -37,6 +38,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   @override
   void dispose() {
     ChatService.instance.removeListener(_onChatChanged);
+    ChatService.instance.stopListeningMessages(widget.conversationId);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -52,7 +54,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   void _markRead() {
     final auth = context.read<AuthProvider>();
     final uid = auth.userId ?? '';
-    final role = auth.role ?? 'patient';
+    final role = auth.role;
     if (uid.isEmpty) return;
     ChatService.instance.markRead(
       conversationId: widget.conversationId,
@@ -74,18 +76,34 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     return '$h:$m $ap';
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     final uid = context.read<AuthProvider>().userId ?? '';
     if (uid.isEmpty) return;
 
-    ChatService.instance.sendMessage(
+    final ok = await ChatService.instance.sendMessage(
       conversationId: widget.conversationId,
       senderId: uid,
       text: text,
     );
-    _controller.clear();
+    if (!mounted) return;
+    if (ok) {
+      _controller.clear();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    } else {
+      final detail = FirebaseService.lastChatSendError;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 8),
+          content: Text(
+            detail != null && detail.isNotEmpty
+                ? 'Message could not be sent. $detail'
+                : 'Message could not be sent. Ask the doctor to confirm the appointment, then open My Chats again.',
+          ),
+        ),
+      );
+    }
   }
 
   @override

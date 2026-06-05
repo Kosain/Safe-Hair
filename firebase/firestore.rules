@@ -55,5 +55,32 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+    match /chat_conversations/{convId} {
+      // get() on a missing doc has no resource.data — allow participants to create threads.
+      allow get: if request.auth != null
+          && (!exists(/databases/$(database)/documents/chat_conversations/$(convId))
+              || resource.data.patientId == request.auth.uid
+              || resource.data.doctorId == request.auth.uid);
+      allow list: if request.auth != null
+          && (resource.data.patientId == request.auth.uid
+              || resource.data.doctorId == request.auth.uid);
+      allow create: if request.auth != null
+          && (request.resource.data.patientId == request.auth.uid
+              || request.resource.data.doctorId == request.auth.uid);
+      allow update: if request.auth != null
+          && (resource.data.patientId == request.auth.uid
+              || resource.data.doctorId == request.auth.uid);
+
+      match /messages/{msgId} {
+        allow read: if request.auth != null
+            && (get(/databases/$(database)/documents/chat_conversations/$(convId)).data.patientId == request.auth.uid
+                || get(/databases/$(database)/documents/chat_conversations/$(convId)).data.doctorId == request.auth.uid);
+        allow create: if request.auth != null
+            && (get(/databases/$(database)/documents/chat_conversations/$(convId)).data.patientId == request.auth.uid
+                || get(/databases/$(database)/documents/chat_conversations/$(convId)).data.doctorId == request.auth.uid)
+            && (request.resource.data.senderId == request.auth.uid
+                || request.resource.data.senderId == '__system__');
+      }
+    }
   }
 }

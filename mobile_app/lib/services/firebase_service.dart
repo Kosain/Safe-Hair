@@ -895,6 +895,94 @@ class FirebaseService {
         .snapshots();
   }
 
+  /// One-shot patient appointments (userId + legacy patientId fields merged).
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getPatientAppointmentsOnce(
+    String userId,
+  ) async {
+    if (!_initialized || userId.isEmpty) return [];
+    try {
+      final a = await firestore.collection('appointments').where('userId', isEqualTo: userId).get();
+      final b = await firestore.collection('appointments').where('patientId', isEqualTo: userId).get();
+      final byId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+      for (final d in a.docs) {
+        byId[d.id] = d;
+      }
+      for (final d in b.docs) {
+        byId[d.id] = d;
+      }
+      return byId.values.toList();
+    } catch (e, st) {
+      debugPrint('getPatientAppointmentsOnce: $e\n$st');
+      return [];
+    }
+  }
+
+  static Future<Map<String, dynamic>?> getAppointmentOnce(String appointmentId) async {
+    if (!_initialized || appointmentId.isEmpty) return null;
+    try {
+      final doc = await firestore.collection('appointments').doc(appointmentId).get();
+      return doc.data();
+    } catch (e, st) {
+      debugPrint('getAppointmentOnce: $e\n$st');
+      return null;
+    }
+  }
+
+  /// Appointment ids from patient inbox rows where the doctor confirmed (top-level `event` / title).
+  static Future<List<String>> getConfirmedAppointmentIdsForPatient(String userId) async {
+    if (!_initialized || userId.isEmpty) return [];
+    try {
+      final snap = await firestore.collection('patient_notifications').where('userId', isEqualTo: userId).get();
+      final ids = <String>[];
+      for (final d in snap.docs) {
+        final m = d.data();
+        if ((m['type'] ?? 'appointment').toString() != 'appointment') continue;
+        final event = (m['event'] ?? '').toString();
+        final title = (m['title'] ?? '').toString().toLowerCase();
+        if (event != 'confirmed' && !title.contains('confirmed')) continue;
+        final apptId = (m['appointmentId'] ?? '').toString().trim();
+        if (apptId.isNotEmpty) ids.add(apptId);
+      }
+      return ids;
+    } catch (e, st) {
+      debugPrint('getConfirmedAppointmentIdsForPatient: $e\n$st');
+      return [];
+    }
+  }
+
+  /// One-shot doctor appointments (merged doctorId + doctorID).
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getDoctorAppointmentsOnce(
+    String doctorId,
+  ) async {
+    return _appointmentDocsForDoctorMergedOnce(doctorId);
+  }
+
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getChatConversationsForPatientOnce(
+    String patientId,
+  ) async {
+    if (!_initialized || patientId.isEmpty) return [];
+    try {
+      final snap = await firestore.collection('chat_conversations').where('patientId', isEqualTo: patientId).get();
+      return snap.docs;
+    } catch (e, st) {
+      debugPrint('getChatConversationsForPatientOnce: $e\n$st');
+      return [];
+    }
+  }
+
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getChatConversationsForDoctorOnce(
+    String doctorId,
+  ) async {
+    if (!_initialized || doctorId.isEmpty) return [];
+    try {
+      final snap = await firestore.collection('chat_conversations').where('doctorId', isEqualTo: doctorId).get();
+      return snap.docs;
+    } catch (e, st) {
+      debugPrint('getChatConversationsForDoctorOnce: $e\n$st');
+      return [];
+    }
+  }
+
   /// In-app inbox for patients (e.g. appointment accepted by doctor). Any signed-in user may create.
   static Future<String?> addPatientNotification({
     required String userId,
@@ -1602,6 +1690,264 @@ class FirebaseService {
     }
     return out;
   }
+
+  // ============ Chat (patient ↔ doctor, real-time) ============
+
+  static const String chatSystemSenderId = '__system__';
+
+  static DateTime? _chatTimestamp(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is String) return DateTime.tryParse(v);
+    return null;
+  }
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> chatConversationsForPatientStream(String patientId) {
+    return firestore.collection('chat_conversations').where('patientId', isEqualTo: patientId).snapshots();
+  }
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> chatConversationsForDoctorStream(String doctorId) {
+    return firestore.collection('chat_conversations').where('doctorId', isEqualTo: doctorId).snapshots();
+  }
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> chatMessagesStream(String conversationId) {
+    return firestore
+        .collection('chat_conversations')
+        .doc(conversationId)
+        .collection('messages')
+        .snapshots();
+  }
+
+  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> getChatMessagesOnce(
+    String conversationId,
+  ) async {
+    if (!_initialized || conversationId.isEmpty) return [];
+    try {
+      final snap = await firestore
+          .collection('chat_conversations')
+          .doc(conversationId)
+          .collection('messages')
+          .get();
+      final docs = snap.docs.toList();
+      docs.sort((a, b) {
+        final ta = _chatTimestamp(a.data()['timestamp']);
+        final tb = _chatTimestamp(b.data()['timestamp']);
+        if (ta != null && tb != null) return ta.compareTo(tb);
+        return a.id.compareTo(b.id);
+      });
+      return docs;
+    } catch (e, st) {
+      debugPrint('getChatMessagesOnce: $e\n$st');
+      return [];
+    }
+  }
+
+  /// Creates conversation + optional system message when doctor confirms appointment.
+  static String? lastChatSendError;
+
+  /// User-facing hint when Firestore rejects chat writes (rules not deployed, wrong account, etc.).
+  static String friendlyFirestoreError(Object error) {
+    final s = error.toString().toLowerCase();
+    if (s.contains('permission-denied') || s.contains('permission_denied')) {
+      return 'Firestore blocked this action. From the project root run: '
+          'py backend\\scripts\\deploy_firestore_rules.py '
+          '(or paste firebase/firestore.rules in Firebase Console → Firestore → Rules → Publish).';
+    }
+    if (s.contains('unauthenticated')) {
+      return 'You are not signed in. Sign out and sign in again, then retry.';
+    }
+    if (s.contains('not-found')) {
+      return 'Chat thread not found in the database.';
+    }
+    return error.toString();
+  }
+
+  static bool _appointmentAcceptedFromData(Map<String, dynamic> data) {
+    if (!data.containsKey('appointmentAccepted')) return true;
+    final v = data['appointmentAccepted'];
+    if (v == true) return true;
+    if (v is String && v.toLowerCase() == 'true') return true;
+    return false;
+  }
+
+  static Future<bool> ensureChatConversation({
+    required String conversationId,
+    required String appointmentId,
+    required String patientId,
+    required String doctorId,
+    required String patientName,
+    required String doctorName,
+    required String systemMessageText,
+  }) async {
+    if (!_initialized) return false;
+    lastChatSendError = null;
+    try {
+      final ref = firestore.collection('chat_conversations').doc(conversationId);
+      final existing = await ref.get();
+      final now = FieldValue.serverTimestamp();
+      if (!existing.exists) {
+        await ref.set({
+          'conversationId': conversationId,
+          'appointmentId': appointmentId,
+          'patientId': patientId,
+          'doctorId': doctorId,
+          'patientName': patientName,
+          'doctorName': doctorName,
+          'lastMessage': systemMessageText,
+          'lastMessageTime': now,
+          'appointmentAccepted': true,
+          'unreadCountPatient': 0,
+          'unreadCountDoctor': 0,
+          'createdAt': now,
+        });
+      } else {
+        await ref.set({
+          'appointmentAccepted': true,
+          'appointmentId': appointmentId,
+          'patientId': patientId,
+          'doctorId': doctorId,
+          'patientName': patientName,
+          'doctorName': doctorName,
+          'lastMessage': systemMessageText,
+          'lastMessageTime': now,
+        }, SetOptions(merge: true));
+      }
+
+      try {
+        final msgs = await ref.collection('messages').limit(1).get();
+        if (msgs.docs.isEmpty) {
+          await ref.collection('messages').add({
+            'conversationId': conversationId,
+            'senderId': chatSystemSenderId,
+            'text': systemMessageText,
+            'timestamp': now,
+            'isRead': false,
+          });
+        }
+      } catch (e, st) {
+        debugPrint('ensureChatConversation system message (non-fatal): $e\n$st');
+      }
+      return true;
+    } catch (e, st) {
+      lastChatSendError = friendlyFirestoreError(e);
+      debugPrint('ensureChatConversation: $e\n$st');
+      return false;
+    }
+  }
+
+  static Future<bool> sendChatMessage({
+    required String conversationId,
+    required String senderId,
+    required String text,
+    required String patientId,
+    required String doctorId,
+    String? systemMessageFallback,
+    String? appointmentId,
+    String? patientDisplayName,
+    String? doctorDisplayName,
+  }) async {
+    if (!_initialized || text.trim().isEmpty) return false;
+    lastChatSendError = null;
+    try {
+      final ref = firestore.collection('chat_conversations').doc(conversationId);
+      var conv = await ref.get();
+      if (!conv.exists) {
+        final apptId = (appointmentId ?? '').trim();
+        if (apptId.isEmpty) {
+          lastChatSendError = 'Chat thread not saved to cloud yet.';
+          return false;
+        }
+        final ok = await ensureChatConversation(
+          conversationId: conversationId,
+          appointmentId: apptId,
+          patientId: patientId,
+          doctorId: doctorId,
+          patientName: patientDisplayName ?? 'Patient',
+          doctorName: doctorDisplayName ?? 'Doctor',
+          systemMessageText: systemMessageFallback ?? 'Appointment confirmed. You can now message each other.',
+        );
+        if (!ok) {
+          lastChatSendError = 'Chat thread is not in Firestore yet.';
+          return false;
+        }
+        conv = await ref.get();
+      }
+      if (!conv.exists) {
+        lastChatSendError = 'Chat thread not found.';
+        return false;
+      }
+      final data = conv.data()!;
+      if (!_appointmentAcceptedFromData(data)) {
+        lastChatSendError = 'Appointment is not confirmed yet.';
+        return false;
+      }
+
+      final docPatient = (data['patientId'] ?? patientId).toString();
+      final docDoctor = (data['doctorId'] ?? doctorId).toString();
+      if (senderId != docPatient && senderId != docDoctor) {
+        lastChatSendError = 'You are not a participant in this chat thread.';
+        return false;
+      }
+
+      final isPatient = senderId == docPatient;
+      final now = FieldValue.serverTimestamp();
+      await ref.collection('messages').add({
+        'conversationId': conversationId,
+        'senderId': senderId,
+        'text': text.trim(),
+        'timestamp': now,
+        'isRead': false,
+      });
+
+      try {
+        final unreadPatient = (data['unreadCountPatient'] as num?)?.toInt() ?? 0;
+        final unreadDoctor = (data['unreadCountDoctor'] as num?)?.toInt() ?? 0;
+        await ref.update({
+          'lastMessage': text.trim(),
+          'lastMessageTime': now,
+          'unreadCountPatient': isPatient ? unreadPatient : unreadPatient + 1,
+          'unreadCountDoctor': isPatient ? unreadDoctor + 1 : unreadDoctor,
+        });
+      } catch (e) {
+        debugPrint('sendChatMessage: conversation metadata update failed: $e');
+      }
+      return true;
+    } catch (e, st) {
+      lastChatSendError = friendlyFirestoreError(e);
+      debugPrint('sendChatMessage: $e\n$st');
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>?> getChatConversationData(String conversationId) async {
+    if (!_initialized || conversationId.isEmpty) return null;
+    try {
+      final doc = await firestore.collection('chat_conversations').doc(conversationId).get();
+      return doc.data();
+    } catch (e, st) {
+      debugPrint('getChatConversationData: $e\n$st');
+      return null;
+    }
+  }
+
+  static Future<void> markChatConversationRead({
+    required String conversationId,
+    required String role,
+  }) async {
+    if (!_initialized) return;
+    try {
+      final ref = firestore.collection('chat_conversations').doc(conversationId);
+      if (role == 'patient') {
+        await ref.update({'unreadCountPatient': 0});
+      } else if (role == 'doctor') {
+        await ref.update({'unreadCountDoctor': 0});
+      }
+    } catch (e, st) {
+      debugPrint('markChatConversationRead: $e\n$st');
+    }
+  }
+
+  static DateTime? chatTimestampFromField(dynamic v) => _chatTimestamp(v);
 }
 
 /// Completed appointment eligible for a patient review prompt.

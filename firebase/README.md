@@ -37,10 +37,21 @@ py backend\scripts\seed_demo_patient_moeed.py
 
 ## Deploy Firestore rules
 
+**Option A — Python (no Node.js required):**
+
+```powershell
+cd "path\to\Safe_Hair"
+py backend\scripts\deploy_firestore_rules.py
+```
+
+**Option B — Firebase CLI:**
+
 ```powershell
 cd mobile_app
 firebase deploy --only firestore:rules
 ```
+
+**Option C — Firebase Console:** open [Firestore Rules](https://console.firebase.google.com/project/safe-hair-274/firestore/rules), paste `firebase/firestore.rules`, click **Publish**.
 
 ## Check alignment
 

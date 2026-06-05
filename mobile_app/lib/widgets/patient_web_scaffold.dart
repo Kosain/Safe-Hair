@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -216,6 +217,10 @@ class _TopProfileBarState extends State<_TopProfileBar> {
               ),
             ),
           const Spacer(),
+          if (auth.role == 'patient' && auth.userId != null && FirebaseService.isInitialized)
+            _PatientAppointmentNotificationBell(userId: auth.userId!),
+          if (auth.role == 'patient' && auth.userId != null && FirebaseService.isInitialized)
+            const SizedBox(width: 4),
           PopupMenuButton<String>(
             color: context.sh.card,
             itemBuilder: (ctx) => [
@@ -252,6 +257,207 @@ class _TopProfileBarState extends State<_TopProfileBar> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Bell + badge; opens a scrollable card anchored under the icon.
+class _PatientAppointmentNotificationBell extends StatefulWidget {
+  const _PatientAppointmentNotificationBell({required this.userId});
+
+  final String userId;
+
+  @override
+  State<_PatientAppointmentNotificationBell> createState() => _PatientAppointmentNotificationBellState();
+}
+
+class _PatientAppointmentNotificationBellState extends State<_PatientAppointmentNotificationBell> {
+  final GlobalKey _bellKey = GlobalKey();
+
+  static List<QueryDocumentSnapshot<Map<String, dynamic>>> _unreadAppointmentDocs(
+    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    return docs.where((d) {
+      final m = d.data();
+      if (m['read'] == true) return false;
+      return (m['type'] ?? 'appointment').toString() == 'appointment';
+    }).toList();
+  }
+
+  void _showPanel(BuildContext context, List<QueryDocumentSnapshot<Map<String, dynamic>>> items) {
+    final sh = context.sh;
+    final box = _bellKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final bottomRight = box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay);
+    const cardWidth = 380.0;
+    final screenW = overlay.size.width;
+    var left = bottomRight.dx - cardWidth;
+    if (left < 12) left = 12;
+    if (left + cardWidth > screenW - 12) left = screenW - cardWidth - 12;
+
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close notifications',
+      barrierColor: Colors.black26,
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (ctx, _, __) {
+        return Stack(
+          children: [
+            Positioned(
+              left: left,
+              top: bottomRight.dy + 8,
+              width: cardWidth,
+              child: Material(
+                elevation: 10,
+                shadowColor: Colors.black45,
+                color: sh.card,
+                borderRadius: BorderRadius.circular(14),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 360),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Appointment updates',
+                                  style: TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    color: sh.textPrimary,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                icon: Icon(Icons.close, color: sh.textSecondary, size: 20),
+                                onPressed: () => Navigator.pop(ctx),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Divider(height: 1, color: sh.border),
+                        Flexible(
+                          child: items.isEmpty
+                              ? Padding(
+                                  padding: const EdgeInsets.all(20),
+                                  child: Text(
+                                    'No new updates.',
+                                    style: TextStyle(color: sh.textSecondary),
+                                  ),
+                                )
+                              : Scrollbar(
+                                  thumbVisibility: true,
+                                  child: ListView.separated(
+                                    shrinkWrap: true,
+                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    itemCount: items.length,
+                                    separatorBuilder: (_, __) => Divider(height: 1, color: sh.border),
+                                    itemBuilder: (context, index) {
+                                      final d = items[index];
+                                      final m = d.data();
+                                      final title = (m['title'] ?? 'Update').toString();
+                                      final body = (m['body'] ?? '').toString();
+                                      final event = (m['event'] ?? '').toString();
+                                      final isConfirmed =
+                                          event == 'confirmed' || title.toLowerCase().contains('confirmed');
+                                      return ListTile(
+                                        dense: true,
+                                        leading: Icon(
+                                          isConfirmed ? Icons.check_circle_outline : Icons.info_outline,
+                                          color: isConfirmed ? const Color(0xFF2E7D32) : Colors.deepOrange.shade800,
+                                        ),
+                                        title: Text(
+                                          title,
+                                          style: TextStyle(fontWeight: FontWeight.w600, color: sh.textPrimary),
+                                        ),
+                                        subtitle: body.isNotEmpty
+                                            ? Text(body, style: TextStyle(fontSize: 13, color: sh.textSecondary))
+                                            : null,
+                                        trailing: TextButton(
+                                          onPressed: () => FirebaseService.markPatientNotificationRead(d.id),
+                                          child: const Text('Dismiss'),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                        ),
+                        Divider(height: 1, color: sh.border),
+                        TextButton(
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            context.go('/my-appointments');
+                          },
+                          child: const Text('Open My Appointments'),
+                        ),
+                        const SizedBox(height: 4),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sh = context.sh;
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseService.patientNotificationsStream(widget.userId),
+      builder: (context, snap) {
+        final unread = _unreadAppointmentDocs(snap.data?.docs ?? const []);
+        final hasConfirmed = unread.any((d) {
+          final m = d.data();
+          final event = (m['event'] ?? '').toString();
+          final title = (m['title'] ?? '').toString().toLowerCase();
+          return event == 'confirmed' || title.contains('confirmed');
+        });
+        return IconButton(
+          key: _bellKey,
+          tooltip: unread.isEmpty
+              ? 'No appointment updates'
+              : hasConfirmed
+                  ? 'Doctor confirmed your appointment'
+                  : 'Appointment update',
+          onPressed: () => _showPanel(context, unread),
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(
+                unread.isEmpty ? Icons.notifications_none_outlined : Icons.notifications_active_outlined,
+                color: sh.textPrimary,
+              ),
+              if (unread.isNotEmpty)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: hasConfirmed ? const Color(0xFF2E7D32) : Colors.deepOrange,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: sh.card, width: 1.5),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

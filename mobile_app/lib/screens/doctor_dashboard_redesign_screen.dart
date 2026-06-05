@@ -300,7 +300,7 @@ class _DoctorAppointmentsFirestoreState extends State<DoctorAppointmentsFirestor
       }
       final patientUid = (data['userId'] ?? '').toString();
       if (patientUid.isNotEmpty) {
-        ChatService.instance.ensureConversationAfterAccept(
+        await ChatService.instance.ensureConversationAfterAccept(
           appointmentId: docId,
           patientId: patientUid,
           doctorId: widget.doctorId,
@@ -308,6 +308,10 @@ class _DoctorAppointmentsFirestoreState extends State<DoctorAppointmentsFirestor
           doctorName: (data['doctorName'] ?? 'Your doctor').toString(),
           date: data['date']?.toString(),
           timeSlot: (data['timeSlot'] ?? data['time'])?.toString(),
+        );
+        ChatService.instance.startListeningConversations(
+          userId: widget.doctorId,
+          role: 'doctor',
         );
       }
       if (patientUid.isNotEmpty) {
@@ -1029,7 +1033,7 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
           Text(context.t('upcoming_appointments'), style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: sh.textPrimary)),
           const SizedBox(height: 12),
           SizedBox(
-            height: 102,
+            height: 136,
             child: items.isEmpty
                 ? Center(
                     child: Text(
@@ -1053,7 +1057,8 @@ class _UpcomingAppointmentsCard extends StatelessWidget {
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,

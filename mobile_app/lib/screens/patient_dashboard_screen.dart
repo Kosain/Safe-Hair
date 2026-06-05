@@ -28,31 +28,6 @@ int _compareHairScanCreated(dynamic a, dynamic b) {
   return da.compareTo(db);
 }
 
-List<QueryDocumentSnapshot<Map<String, dynamic>>> _unreadAppointmentInbox(
-  Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-) {
-  final out = docs.where((d) {
-    final m = d.data();
-    if (m['read'] == true) return false;
-    final t = (m['type'] ?? 'appointment').toString();
-    return t == 'appointment';
-  }).toList();
-  DateTime? ts(Map<String, dynamic> m) {
-    final c = m['createdAt'];
-    if (c is Timestamp) return c.toDate();
-    if (c is String) return DateTime.tryParse(c);
-    return null;
-  }
-
-  out.sort((a, b) {
-    final ta = ts(a.data());
-    final tb = ts(b.data());
-    if (ta != null && tb != null) return tb.compareTo(ta);
-    return b.id.compareTo(a.id);
-  });
-  return out;
-}
-
 class PatientDashboardScreen extends StatefulWidget {
   const PatientDashboardScreen({super.key});
 
@@ -93,9 +68,6 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
               return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: FirebaseService.getAppointments(uid),
                 builder: (context, apptSnap) {
-                  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: FirebaseService.patientNotificationsStream(uid),
-                    builder: (context, inboxSnap) {
                   final data = detailSnap.data?.data();
                   final strength = (data?['hairStrengthPct'] as num?)?.round();
                   final scalp = (data?['hairScalpHealthPct'] as num?)?.round();
@@ -118,17 +90,12 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
                   final apptLoading = apptSnap.connectionState == ConnectionState.waiting;
                   final reminder = nextUpcomingAppointmentSummary(apptSnap.data?.docs ?? const []);
                   final routineTip = data?['hairLatestRoutineTip']?.toString();
-                  final inboxUnread = _unreadAppointmentInbox(inboxSnap.data?.docs ?? const []);
 
                   return Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 1200),
                       child: Column(
                         children: [
-                          if (inboxUnread.isNotEmpty) ...[
-                            _PatientAppointmentInboxBanner(items: inboxUnread),
-                            const SizedBox(height: 12),
-                          ],
                           _MetricsCard(
                             lastScanLine: lastLine,
                             hasMetrics: hasData,
@@ -161,8 +128,6 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
                         ],
                       ),
                     ),
-                  );
-                    },
                   );
                 },
               );
@@ -676,67 +641,6 @@ class _ChartCard extends StatelessWidget {
           Text(context.t('hair_strength_over_time'), style: TextStyle(fontSize: 12, color: sh.textSecondary)),
         ],
       ),
-    );
-  }
-}
-
-class _PatientAppointmentInboxBanner extends StatelessWidget {
-  const _PatientAppointmentInboxBanner({required this.items});
-
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const Text(
-          'Appointment updates',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.black87),
-        ),
-        const SizedBox(height: 8),
-        ...items.take(4).map((d) {
-          final m = d.data();
-          final title = (m['title'] ?? 'Update').toString();
-          final body = (m['body'] ?? '').toString();
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Material(
-              color: const Color(0xFFE8F5E9),
-              borderRadius: BorderRadius.circular(14),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.notifications_active_outlined, color: Color(0xFF2E7D32), size: 22),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-                          if (body.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(body, style: const TextStyle(fontSize: 13, height: 1.35)),
-                            ),
-                        ],
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () async {
-                        await FirebaseService.markPatientNotificationRead(d.id);
-                      },
-                      child: const Text('Dismiss'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }),
-      ],
     );
   }
 }

@@ -7,6 +7,7 @@ import '../l10n/tr.dart';
 import '../models/chat_models.dart';
 import '../providers/auth_provider.dart';
 import '../services/chat_service.dart';
+import '../services/firebase_service.dart';
 import '../widgets/doctor_chat_shell.dart';
 import '../widgets/patient_web_scaffold.dart';
 
@@ -41,15 +42,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final auth = context.read<AuthProvider>();
     final uid = auth.userId ?? '';
     final role = auth.role;
+    if (mounted) setState(() => _syncing = true);
     if (uid.isNotEmpty) {
       await ChatService.instance.syncAcceptedAppointmentsFromFirestore(
         userId: uid,
         role: role,
       );
-      ChatService.instance.seedDemoConversationsIfEmpty(
-        userId: uid,
-        role: role,
-      );
+      if (!FirebaseService.isInitialized) {
+        ChatService.instance.seedDemoConversationsIfEmpty(
+          userId: uid,
+          role: role,
+        );
+      }
     }
     if (mounted) setState(() => _syncing = false);
   }
@@ -90,10 +94,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
       listContent = Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
         child: Center(
-          child: Text(
-            context.t('no_chats_patient'),
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 15, color: context.sh.textSecondary, height: 1.45),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                context.t('no_chats_patient'),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 15, color: context.sh.textSecondary, height: 1.45),
+              ),
+              const SizedBox(height: 16),
+              _RefreshChatsButton(syncing: _syncing, onPressed: _sync),
+            ],
           ),
         ),
       );
@@ -168,10 +179,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           ? Center(
                               child: Padding(
                                 padding: const EdgeInsets.all(24),
-                                child: Text(
-                                  context.t('no_chats_doctor'),
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(fontSize: 15, color: context.sh.textSecondary, height: 1.45),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      context.t('no_chats_doctor'),
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        color: context.sh.textSecondary,
+                                        height: 1.45,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    _RefreshChatsButton(syncing: _syncing, onPressed: _sync),
+                                  ],
                                 ),
                               ),
                             )
@@ -207,6 +229,31 @@ class _ChatListScreenState extends State<ChatListScreen> {
       backgroundColor: context.sh.card,
       extraScrollBottomPadding: 88,
       body: body,
+    );
+  }
+}
+
+class _RefreshChatsButton extends StatelessWidget {
+  const _RefreshChatsButton({required this.syncing, required this.onPressed});
+
+  final bool syncing;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final sh = context.sh;
+    return OutlinedButton.icon(
+      onPressed: syncing ? null : onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: sh.textPrimary,
+        disabledForegroundColor: sh.textSecondary,
+        backgroundColor: sh.card,
+        side: BorderSide(color: sh.textPrimary.withValues(alpha: 0.35)),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      icon: const Icon(Icons.refresh, size: 18),
+      label: const Text('Refresh chats'),
     );
   }
 }
