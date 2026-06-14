@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
@@ -89,7 +91,6 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
 
                   final apptLoading = apptSnap.connectionState == ConnectionState.waiting;
                   final reminder = nextUpcomingAppointmentSummary(apptSnap.data?.docs ?? const []);
-                  final routineTip = data?['hairLatestRoutineTip']?.toString();
 
                   return Center(
                     child: ConstrainedBox(
@@ -118,7 +119,7 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
                                 ),
                                 const SizedBox(width: 14),
                                 Expanded(
-                                  child: _RoutineCard(latestTip: routineTip),
+                                  child: const _RoutineCard(),
                                 ),
                               ],
                             ),
@@ -162,7 +163,7 @@ class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
                       ),
                     ),
                     const SizedBox(width: 14),
-                    const Expanded(child: _RoutineCard(latestTip: null)),
+                    const Expanded(child: _RoutineCard()),
                   ],
                 ),
               ),
@@ -226,12 +227,47 @@ class _MetricsCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Your hair health',
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: sh.textPrimary),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Your hair health',
+                      style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: sh.textPrimary),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(lastScanLine, style: TextStyle(color: sh.textSecondary)),
+                  ],
+                ),
+              ),
+              Material(
+                color: sh.sidebarSelectedBg,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: () {
+                    context.push(
+                      '/hair-health-guide',
+                      extra: {
+                        'strength': hasMetrics ? strength : null,
+                        'scalp': hasMetrics ? scalp : null,
+                        'damage': hasMetrics ? damage : null,
+                        'fall': hasMetrics ? fall : null,
+                      },
+                    );
+                  },
+                  customBorder: const CircleBorder(),
+                  child: SizedBox(
+                    width: 36,
+                    height: 36,
+                    child: Icon(Icons.north_east_rounded, size: 20, color: sh.textSecondary),
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
-          Text(lastScanLine, style: TextStyle(color: sh.textSecondary)),
           const SizedBox(height: 16),
           Row(
             children: List.generate(4, (i) {
@@ -389,18 +425,87 @@ class _ReminderCard extends StatelessWidget {
   }
 }
 
-class _RoutineCard extends StatelessWidget {
-  const _RoutineCard({this.latestTip});
+class _RoutineCard extends StatefulWidget {
+  const _RoutineCard();
 
-  final String? latestTip;
+  @override
+  State<_RoutineCard> createState() => _RoutineCardState();
+}
+
+class _RoutineCardState extends State<_RoutineCard> {
+  static const _tips = [
+    'Massage your scalp for 5 minutes daily to boost circulation.',
+    'Use a silk or satin pillowcase to reduce friction and hair breakage.',
+    'Wash hair with lukewarm water; hot water strips natural oils.',
+    'Apply conditioner mainly to the ends, not the scalp.',
+    'Trim split ends every 6–8 weeks to prevent further damage.',
+    'Avoid tight hairstyles that pull on the hairline (traction alopecia).',
+    'Eat protein-rich foods like eggs, fish, and beans for stronger hair.',
+    'Use a wide-tooth comb on wet hair to minimize breakage.',
+    'Limit heat styling; always use a heat protectant spray.',
+    'Stay hydrated – drink enough water to keep your scalp healthy.',
+    'Incorporate iron-rich foods (spinach, lentils) to prevent shedding.',
+    'Use a gentle, sulfate-free shampoo to avoid scalp irritation.',
+    "Don't rub your hair vigorously with a towel – pat dry instead.",
+    'Take a break from chemical treatments like perms or relaxers.',
+    'Protect your hair from the sun with a hat or UV-protectant spray.',
+    'Try a weekly hot oil treatment (coconut, argan, or jojoba oil).',
+    "Avoid brushing hair when it's wet – use a detangling spray first.",
+    'Manage stress – high stress levels can trigger telogen effluvium.',
+    'Take biotin or multivitamin supplements after consulting a doctor.',
+    'Do a scalp scrub once a month to remove buildup and dead skin.',
+    'Alternate between different shampoos to prevent product buildup.',
+    'Use a leave-in conditioner for added moisture and protection.',
+    'Avoid over-washing – 2–3 times a week is usually enough.',
+    'Sleep with your hair in a loose braid or bun to prevent tangles.',
+    'Apply a few drops of rosemary oil to the scalp to promote growth.',
+    'Avoid smoking – it reduces blood flow to hair follicles.',
+    'Use a humidifier in dry climates to keep scalp hydrated.',
+    "Don't share combs, brushes, or hats to prevent fungal infections.",
+    'Rinse hair with cool water after conditioning to seal cuticles.',
+    'Take a break from hair dryers and let your hair air-dry sometimes.',
+    'Use a boar bristle brush to distribute natural oils evenly.',
+    'Avoid hairstyles that require heavy gels or alcohol-based products.',
+    'Eat foods rich in omega-3 fatty acids (salmon, walnuts, flaxseeds).',
+    'Check your thyroid and iron levels if you experience sudden hair loss.',
+    'Use a microfiber towel to reduce friction and frizz.',
+    "Don't scratch your scalp – treat dandruff with medicated shampoo.",
+    'Take a collagen supplement to support hair structure.',
+    'Avoid frequent dyeing – space out color treatments by 6–8 weeks.',
+    'Use a satin scrunchie instead of elastic bands to prevent breakage.',
+    'Get enough sleep – growth hormone is released during deep sleep.',
+    'Apply aloe vera gel to soothe an irritated scalp.',
+    "Don't ignore sudden patchy hair loss – see a dermatologist.",
+    'Use a shower filter to remove chlorine and heavy metals.',
+    'Avoid high-sugar diets – they can trigger inflammation and shedding.',
+    'Try inversion method (bending over and massaging scalp for 4 minutes).',
+    'Use a hair serum with niacinamide to strengthen follicles.',
+    "Don't overuse dry shampoo – it can clog pores and cause buildup.",
+    'Take a hair growth supplement containing saw palmetto (for men) or iron (for women).',
+    'Avoid sleeping with wet hair – it can lead to fungal growth.',
+    'Be patient – hair grows about 0.5 inches per month; results take time.',
+  ];
+
+  late String _currentTip;
+  final _random = Random();
+
+  @override
+  void initState() {
+    super.initState();
+    _currentTip = _tips[_random.nextInt(_tips.length)];
+  }
+
+  void _showNewTip() {
+    if (_tips.length <= 1) return;
+    var next = _tips[_random.nextInt(_tips.length)];
+    while (next == _currentTip) {
+      next = _tips[_random.nextInt(_tips.length)];
+    }
+    setState(() => _currentTip = next);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final tip = latestTip?.trim();
-    final body = (tip != null && tip.isNotEmpty)
-        ? tip
-        : 'Run a scalp analysis from My Scans to save your latest AI care recommendation here.';
-
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -416,32 +521,37 @@ class _RoutineCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              InkWell(
-                borderRadius: BorderRadius.circular(22),
-                onTap: () => context.push('/my-scans'),
-                child: Container(
-                  width: 34,
-                  height: 34,
-                  decoration: const BoxDecoration(
-                    color: Colors.black,
-                    shape: BoxShape.circle,
+              Material(
+                color: Colors.black,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: _showNewTip,
+                  customBorder: const CircleBorder(),
+                  child: const SizedBox(
+                    width: 34,
+                    height: 34,
+                    child: Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                   ),
-                  child: const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                 ),
               ),
               const SizedBox(width: 10),
-              Expanded(
+              const Expanded(
                 child: Text(
-                  context.t('ai_daily_routine'),
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black),
+                  'Quick Tips',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.black),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 10),
           Text(
-            body,
-            style: const TextStyle(height: 1.25, color: Color(0xFF1E1E1E), fontWeight: FontWeight.w600),
+            _currentTip,
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.35,
+              color: Color(0xFF1E1E1E),
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),

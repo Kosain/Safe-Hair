@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+
 import '../core/app_colors.dart';
+import '../services/intro_preferences.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -33,6 +35,31 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       'asset': 'assets/Intro_3.jpg',
     },
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _redirectIfAlreadySeen();
+  }
+
+  Future<void> _redirectIfAlreadySeen() async {
+    if (await IntroPreferences.hasSeenIntro()) {
+      if (!mounted) return;
+      context.go('/role');
+    }
+  }
+
+  Future<void> _finishIntro() async {
+    await IntroPreferences.markIntroSeen();
+    if (!mounted) return;
+    context.go('/role');
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -159,7 +186,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             curve: Curves.easeInOut,
                           );
                         } else {
-                          context.go('/role');
+                          _finishIntro();
                         }
                       },
                       style: ElevatedButton.styleFrom(
@@ -182,7 +209,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             curve: Curves.easeInOut,
                           );
                         } else {
-                          context.go('/role');
+                          _finishIntro();
                         }
                       },
                       style: ElevatedButton.styleFrom(

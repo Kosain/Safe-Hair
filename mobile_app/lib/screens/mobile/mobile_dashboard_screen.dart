@@ -503,11 +503,34 @@ class _HairHealthCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Container(
-                width: 32,
-                height: 32,
-                decoration: const BoxDecoration(color: Color(0xFFE8E8E8), shape: BoxShape.circle),
-                child: const Icon(Icons.north_east_rounded, size: 18, color: Color(0xFF616161)),
+              Material(
+                color: const Color(0xFFE8E8E8),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: () {
+                    int? valueFor(String label) {
+                      for (final m in metrics) {
+                        if (m.label == label) return m.value;
+                      }
+                      return null;
+                    }
+                    context.push(
+                      '/hair-health-guide',
+                      extra: {
+                        'strength': valueFor('Hair Strength'),
+                        'scalp': valueFor('Scalp Health'),
+                        'damage': valueFor('Hair Damage Level'),
+                        'fall': valueFor('Hair Fall Risk'),
+                      },
+                    );
+                  },
+                  customBorder: const CircleBorder(),
+                  child: const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Icon(Icons.north_east_rounded, size: 18, color: Color(0xFF616161)),
+                  ),
+                ),
               ),
             ],
           ),

@@ -19,6 +19,7 @@ import '../screens/settings_screen.dart';
 import '../screens/clinic_details_screen.dart';
 import '../screens/patient_profile_edit_screen.dart';
 import '../screens/scalp_report_detail_screen.dart';
+import '../screens/hair_health_metrics_guide_screen.dart';
 import '../screens/mobile/mobile_dashboard_screen.dart';
 import '../screens/scalp_analyzer_screen.dart';
 import '../screens/graft_result_screen.dart';
@@ -101,6 +102,7 @@ GoRouter createRouter(AuthProvider authProvider) {
             '/guidelines',
             '/reports',
             '/appointment',
+            '/hair-health-guide',
           }.contains(path);
 
       // Doctor-only feature routes
@@ -204,6 +206,19 @@ GoRouter createRouter(AuthProvider authProvider) {
         path: '/dashboard',
         builder: (_, __) =>
             kIsWeb ? const PatientDashboardWeb() : const MobileDashboardScreen(),
+      ),
+      GoRoute(
+        path: '/hair-health-guide',
+        builder: (context, state) {
+          final extra = state.extra as Map<String, dynamic>? ?? const {};
+          int? asInt(dynamic v) => v is num ? v.round() : int.tryParse(v?.toString() ?? '');
+          return HairHealthMetricsGuideScreen(
+            strength: asInt(extra['strength']),
+            scalp: asInt(extra['scalp']),
+            damage: asInt(extra['damage']),
+            fall: asInt(extra['fall']),
+          );
+        },
       ),
       GoRoute(
         path: '/my-scans',
