@@ -18,7 +18,8 @@ class ApiConfig {
     return b;
   }
 
-  /// Web opened at http://192.168.x.x:8080 must call http://192.168.x.x:8000, not localhost.
+  /// Local LAN dev (http://192.168.x.x:8080) → backend on :8000.
+  /// Production (Vercel, Firebase Hosting, etc.) → same origin, no custom port.
   static String _webBaseFromPageOrigin() {
     if (!kIsWeb) return AppConstants.apiBaseUrlWeb;
     final uri = Uri.base;
@@ -26,7 +27,11 @@ class ApiConfig {
     if (host.isEmpty || host == 'localhost' || host == '127.0.0.1') {
       return AppConstants.apiBaseUrlWeb;
     }
-    final scheme = uri.scheme.isEmpty ? 'http' : uri.scheme;
+    final scheme = uri.scheme.isEmpty ? 'https' : uri.scheme;
+    const standardPorts = {80, 443};
+    if (!uri.hasPort || standardPorts.contains(uri.port)) {
+      return '$scheme://$host';
+    }
     return '$scheme://$host:$backendPort';
   }
 
@@ -57,6 +62,10 @@ class ApiConfig {
       if (isLocalhostUrl(baseUrl)) {
         return 'Start the AI backend on this PC: run backend\\start_backend.bat '
             '(http://localhost:8000), then try again.';
+      }
+      if (!isLocalhostUrl(baseUrl) && !baseUrl.contains(':$backendPort')) {
+        return 'The AI backend may be offline or API_BASE_URL is misconfigured. '
+            'This app is using $baseUrl — check your Vercel environment variables.';
       }
       return 'Start the AI backend on your PC (backend\\start_backend.bat) so it listens on '
           '0.0.0.0:8000 on the same Wi‑Fi. This app is using $baseUrl.';

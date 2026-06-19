@@ -1,0 +1,6 @@
+backend/models/_test_out
+backend/datasets
+ai_model
+mobile_app/build
+**/__pycache__
+**/*.pyc
