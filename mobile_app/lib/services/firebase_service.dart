@@ -60,7 +60,6 @@ class FirebaseService {
       FirebaseFirestore.instance.settings = const Settings(
         persistenceEnabled: true,
         webExperimentalAutoDetectLongPolling: true,
-        webExperimentalForceLongPolling: true,
       );
       if (DefaultFirebaseOptions.web.appId.contains('placeholder') || DefaultFirebaseOptions.web.apiKey.isEmpty) {
         debugPrint('Firebase web configuration appears incomplete. Run `flutterfire configure` to set a real web appId.');
